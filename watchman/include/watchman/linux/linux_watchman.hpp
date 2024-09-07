@@ -11,6 +11,13 @@
 
 #pragma once
 
+#include <type_traits>
+#include <utility>
+#include <string>
+#include <string_view>
+#include <array>
+#include <memory>
+
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
@@ -19,13 +26,6 @@
 #include <boost/filesystem.hpp>
 #include <boost/bimap.hpp>
 #include <boost/throw_exception.hpp>
-
-#include <type_traits>
-#include <utility>
-#include <string>
-#include <string_view>
-#include <array>
-#include <memory>
 
 #include <sys/inotify.h>
 
@@ -244,8 +244,12 @@ namespace watchman {
 
 		void add_directory(const fs::path& dir) noexcept
 		{
-			boost::system::error_code ignore_ec;
-			if (!fs::is_directory(dir, ignore_ec))
+			boost::system::error_code ec;
+
+			if (!fs::is_directory(dir, ec) || ec)
+				return;
+
+			if (fs::is_symlink(dir, ec) || ec)
 				return;
 
 			auto wd = inotify_add_watch(
@@ -291,12 +295,17 @@ namespace watchman {
 			fs::directory_iterator end;
 			for (fs::directory_iterator it(dir); it != end; ++it)
 			{
-				boost::system::error_code ignore_ec;
-				if (fs::is_directory(*it, ignore_ec))
-				{
-					add_directory(*it);
-					add_sub_directory(*it);
-				}
+				boost::system::error_code ec;
+				const auto& item = *it;
+
+				if (!fs::is_directory(item, ec) || ec)
+					continue;
+
+				if (fs::is_symlink(item, ec) || ec)
+					continue;
+
+				add_directory(item);
+				add_sub_directory(item);
 			}
 		}
 

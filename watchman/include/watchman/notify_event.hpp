@@ -11,8 +11,8 @@
 
 #pragma once
 
+#include <deque>
 #include <boost/filesystem.hpp>
-#include <vector>
 
 namespace watchman {
 	namespace fs = boost::filesystem;
@@ -33,5 +33,5 @@ namespace watchman {
 		fs::path new_path_;
 	};
 
-	using notify_events = std::vector<notify_event>;
+	using notify_events = std::deque<notify_event>;
 }
