@@ -49,7 +49,8 @@ namespace watchman {
 		windows_watch_service& operator=(const windows_watch_service&) = delete;
 
 	public:
-		windows_watch_service(const Executor& ex, const fs::path& dir)
+		windows_watch_service(const Executor& ex, const fs::path& dir,
+			const std::vector<fs::path>& excluded_dirs = {})
 			: net::windows::basic_overlapped_handle<Executor>(
 				ex,
 				CreateFileW(dir.wstring().c_str(),
@@ -60,11 +61,14 @@ namespace watchman {
 					FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
 					nullptr))
 			, m_watch_dir(dir)
+			, m_excluded_dirs(excluded_dirs)
 		{
 		}
 
-		explicit windows_watch_service(const Executor& ex)
+		explicit windows_watch_service(const Executor& ex,
+			const std::vector<fs::path>& excluded_dirs = {})
 			: net::windows::basic_overlapped_handle<Executor>(ex)
+			, m_excluded_dirs(excluded_dirs)
 		{}
 		~windows_watch_service() = default;
 
@@ -207,6 +211,23 @@ namespace watchman {
 			}
 		}
 
+		bool is_excluded(const fs::path& path) const
+		{
+			if (m_excluded_dirs.empty())
+				return false;
+
+			for (const auto& excluded : m_excluded_dirs)
+			{
+				// lexically_relative 返回从 excluded 到 path 的相对路径。
+				// 若 path 在 excluded 目录下（如 excluded=/a, path=/a/b/c），
+				// 则返回 "b/c"（不以 ".." 开头）；否则返回 "../..." 或空路径。
+				auto rel = path.lexically_relative(excluded);
+				if (!rel.empty() && !rel.string().starts_with(".."))
+					return true;
+			}
+			return false;
+		}
+
 		inline void convert_result(uint8_t* data, notify_events& result) const
 		{
 			auto item = (PFILE_NOTIFY_INFORMATION)data;
@@ -234,7 +255,9 @@ namespace watchman {
 					e.path_ = m_watch_dir / filename;
 				}
 
-				result.emplace_back(e);
+				// 跳过被排除目录中的事件。
+				if (!is_excluded(e.path_))
+					result.emplace_back(e);
 				e = {};
 
 				if (item->NextEntryOffset == 0)
@@ -254,6 +277,7 @@ namespace watchman {
 
 	private:
 		fs::path m_watch_dir;
+		std::vector<fs::path> m_excluded_dirs;
 	};
 
 	using windows_watch = windows_watch_service<>;
