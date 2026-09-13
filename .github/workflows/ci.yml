@@ -1,0 +1,405 @@
+# watchman 的持续集成：
+#
+# - linux：发行版提供的 GCC / Clang 各版本，外加 arm64 与 -Werror 组合
+# - boost-min：README 声明的最低 Boost 版本（源码构建，顺带覆盖较旧的 GCC）
+# - macos：AppleClang 与 Homebrew LLVM
+# - windows-msvc：MSVC 的 x64 / x86，Debug 与 Release
+# - mingw：MSYS2 的 UCRT64 / MINGW64 / CLANG64 / CLANGARM64
+# - unix-vm：QEMU 里的 FreeBSD / OpenBSD / NetBSD / OmniOS（illumos）
+# - package-consumer：安装后 find_package 与直接 add_subdirectory 两种引入方式
+#
+# 各平台后端只在对应平台上编译，Linux 上的 platform 编译检查借助桩头文件覆盖
+# 其它平台的实现，因此每个任务都必须能独立编译通过。
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'linux gcc-12 Release', runner: ubuntu-24.04, family: gcc, version: '12', build_type: Release }
+          - { name: 'linux gcc-13 Release', runner: ubuntu-24.04, family: gcc, version: '13', build_type: Release }
+          - { name: 'linux gcc-14 Release', runner: ubuntu-24.04, family: gcc, version: '14', build_type: Release }
+          - { name: 'linux clang-16 Release', runner: ubuntu-24.04, family: clang, version: '16', build_type: Release }
+          - { name: 'linux clang-17 Release', runner: ubuntu-24.04, family: clang, version: '17', build_type: Release }
+          - { name: 'linux clang-18 Release', runner: ubuntu-24.04, family: clang, version: '18', build_type: Release }
+          - { name: 'linux gcc-13 Debug', runner: ubuntu-24.04, family: gcc, version: '13', build_type: Debug }
+          - { name: 'linux clang-18 Debug', runner: ubuntu-24.04, family: clang, version: '18', build_type: Debug }
+          - { name: 'linux gcc-13 Debug -Werror', runner: ubuntu-24.04, family: gcc, version: '13', build_type: Debug, cxx_flags: '-Wall -Wextra -Wpedantic -Werror' }
+          - { name: 'linux clang-18 Debug -Werror', runner: ubuntu-24.04, family: clang, version: '18', build_type: Debug, cxx_flags: '-Wall -Wextra -Wpedantic -Werror' }
+          - { name: 'linux arm64 gcc-13 Release', runner: ubuntu-24.04-arm, family: gcc, version: '13', build_type: Release }
+          - { name: 'linux arm64 clang-18 Release', runner: ubuntu-24.04-arm, family: clang, version: '18', build_type: Release }
+    env:
+      CXXFLAGS: ${{ matrix.cxx_flags }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libboost-filesystem-dev libboost-system-dev
+
+          if [ "${{ matrix.family }}" = "gcc" ]; then
+            sudo apt-get install -y "g++-${{ matrix.version }}"
+            echo "CC=gcc-${{ matrix.version }}" >> "$GITHUB_ENV"
+            echo "CXX=g++-${{ matrix.version }}" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y "clang-${{ matrix.version }}"
+            echo "CC=clang-${{ matrix.version }}" >> "$GITHUB_ENV"
+            echo "CXX=clang++-${{ matrix.version }}" >> "$GITHUB_ENV"
+          fi
+
+      - name: 配置
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+  # README 声明 Boost 1.78 起可用，这里用源码构建的最低版本配合较旧的 GCC 验证。
+  boost-min:
+    name: linux gcc-11 Boost 1.78.0 (最低支持版本)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      BOOST_PREFIX: ${{ github.workspace }}/boost-1.78
+      BOOST_RELEASE: 1.78.0
+      BOOST_DIR: boost_1_78_0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-11
+
+      - name: 缓存自建的 Boost
+        id: boost-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BOOST_PREFIX }}
+          key: boost-${{ env.BOOST_RELEASE }}-ubuntu-22.04-gcc-11
+
+      - name: 构建 Boost
+        if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
+        run: |
+          curl -sSL -o boost.tar.gz \
+            "https://archives.boost.io/release/${BOOST_RELEASE}/source/${BOOST_DIR}.tar.gz"
+          tar -xzf boost.tar.gz
+          cd "${BOOST_DIR}"
+          ./bootstrap.sh --with-libraries=filesystem,system --prefix="${BOOST_PREFIX}"
+          ./b2 -j"$(nproc)" install
+
+      - name: 配置
+        env:
+          CC: gcc-11
+          CXX: g++-11
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBoost_ROOT="${BOOST_PREFIX}"
+          -DBOOST_ROOT="${BOOST_PREFIX}"
+          -DCMAKE_PREFIX_PATH="${BOOST_PREFIX}"
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+  macos:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'macos-15 AppleClang Release', runner: macos-15, compiler: appleclang, build_type: Release }
+          - { name: 'macos-15 AppleClang Debug', runner: macos-15, compiler: appleclang, build_type: Debug }
+          - { name: 'macos-15-intel AppleClang Release', runner: macos-15-intel, compiler: appleclang, build_type: Release }
+          - { name: 'macos-26 AppleClang Release', runner: macos-26, compiler: appleclang, build_type: Release }
+          - { name: 'macos-15 LLVM Release', runner: macos-15, compiler: llvm, build_type: Release }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装依赖
+        run: |
+          brew install boost ninja
+
+          if [ "${{ matrix.compiler }}" = "llvm" ]; then
+            brew install llvm
+            echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+            echo "CXX=$(brew --prefix llvm)/bin/clang++" >> "$GITHUB_ENV"
+          fi
+
+      - name: 配置
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+  windows-msvc:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: cmd
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'windows-2022 MSVC x64 Release', runner: windows-2022, arch: x64, build_type: Release }
+          - { name: 'windows-2022 MSVC x64 Debug', runner: windows-2022, arch: x64, build_type: Debug }
+          - { name: 'windows-2022 MSVC x86 Release', runner: windows-2022, arch: x86, build_type: Release }
+          - { name: 'windows-2025 MSVC x64 Release', runner: windows-2025, arch: x64, build_type: Release }
+    env:
+      BOOST_PREFIX: ${{ github.workspace }}\boost-1.86
+      BOOST_RELEASE: 1.86.0
+      BOOST_DIR: boost_1_86_0
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 配置 MSVC 环境
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: 缓存自建的 Boost
+        id: boost-cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.BOOST_PREFIX }}
+          key: boost-${{ env.BOOST_RELEASE }}-msvc-${{ matrix.arch }}
+
+      - name: 构建 Boost
+        if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
+        run: |
+          curl -sSL -o boost.tar.gz https://archives.boost.io/release/%BOOST_RELEASE%/source/%BOOST_DIR%.tar.gz
+          tar -xzf boost.tar.gz
+          cd %BOOST_DIR%
+          call bootstrap.bat
+          b2 -j%NUMBER_OF_PROCESSORS% --with-filesystem --with-system --prefix="%BOOST_PREFIX%" install
+
+      - name: 配置
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DBoost_ROOT="%BOOST_PREFIX%"
+          -DBOOST_ROOT="%BOOST_PREFIX%"
+          -DBoost_USE_STATIC_LIBS=ON
+          -DCMAKE_PREFIX_PATH="%BOOST_PREFIX%"
+
+      - name: 构建
+        run: cmake --build build --parallel
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+  mingw:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: 'mingw UCRT64 gcc Release', runner: windows-2022, msystem: UCRT64, pacboy: 'gcc:p cmake:p ninja:p boost:p', experimental: false }
+          - { name: 'mingw MINGW64 gcc Release', runner: windows-2022, msystem: MINGW64, pacboy: 'gcc:p cmake:p ninja:p boost:p', experimental: false }
+          - { name: 'mingw CLANG64 clang Release', runner: windows-2022, msystem: CLANG64, pacboy: 'clang:p cmake:p ninja:p boost:p', experimental: false }
+          - { name: 'mingw CLANGARM64 clang Release', runner: windows-11-arm, msystem: CLANGARM64, pacboy: 'clang:p cmake:p ninja:p boost:p', experimental: true }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 MSYS2 工具链
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          pacboy: ${{ matrix.pacboy }}
+
+      - name: 配置
+        shell: msys2 {0}
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: 构建
+        shell: msys2 {0}
+        run: cmake --build build --parallel
+
+      - name: 测试
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
+
+  # 虚拟机启动与软件包安装都比较慢，只在推送默认分支或手动触发时运行；
+  # 除 FreeBSD 外都先按实验平台处理，避免平台上的问题直接挡住合并。
+  unix-vm:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: ${{ matrix.experimental }}
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'push'
+      && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
+    defaults:
+      run:
+        shell: cpa.sh {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # FreeBSD 的 clang 来自基本系统，gcc 来自 ports，两者都要显式指定 C++ 编译器。
+          - name: freebsd-15.1 clang Release
+            os: freebsd
+            version: '15.1'
+            experimental: false
+            packages: ''
+            cmake_args: ''
+          - name: freebsd-15.1 gcc-14 Release
+            os: freebsd
+            version: '15.1'
+            experimental: false
+            packages: gcc14
+            cmake_args: '-DCMAKE_C_COMPILER=gcc14 -DCMAKE_CXX_COMPILER=g++14'
+          - name: openbsd-7.9 clang Release
+            os: openbsd
+            version: '7.9'
+            experimental: true
+            packages: ''
+            cmake_args: ''
+          - name: netbsd-11.0 gcc Release
+            os: netbsd
+            version: '11.0'
+            experimental: true
+            packages: ''
+            cmake_args: ''
+          - name: omnios-r151056 gcc-14 Release
+            os: omnios
+            version: 'r151056'
+            experimental: true
+            packages: ''
+            cmake_args: '-DCMAKE_C_COMPILER=/opt/gcc-14/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc-14/bin/g++ -DBoost_ROOT=/tmp/boost -DCMAKE_PREFIX_PATH=/tmp/boost'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 启动虚拟机
+        uses: cross-platform-actions/action@v1
+        with:
+          operating_system: ${{ matrix.os }}
+          version: ${{ matrix.version }}
+          memory: 8G
+          cpu_count: 4
+
+      - name: 安装编译依赖
+        run: |
+          as_root() {
+            if [ "$(id -u)" = 0 ]; then "$@"
+            elif command -v sudo >/dev/null 2>&1; then sudo "$@"
+            else doas "$@"
+            fi
+          }
+
+          case "${{ matrix.os }}" in
+            freebsd)
+              as_root env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
+              as_root pkg install -y boost-libs cmake ninja ${{ matrix.packages }}
+              ;;
+            openbsd)
+              echo "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/packages/$(uname -m)/" > /tmp/installurl
+              as_root cp /tmp/installurl /etc/installurl
+              as_root pkg_add -I boost cmake ninja
+              ;;
+            netbsd)
+              export PATH="/usr/pkg/bin:/usr/local/bin:$PATH"
+              export PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r)/All"
+              as_root env PKG_PATH="$PKG_PATH" pkg_add boost-headers boost-libs cmake ninja
+              ;;
+            omnios)
+              as_root pkg set-publisher -g https://pkg.omnios.org/r151056/extra extra
+              as_root pkg install -y developer/gcc14 ooce/developer/cmake ooce/developer/ninja
+              curl -sSL -o /tmp/boost.tar.gz https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz
+              tar -xzf /tmp/boost.tar.gz -C /tmp
+              cd "/tmp/boost_1_86_0"
+              ./bootstrap.sh --with-libraries=filesystem,system --prefix=/tmp/boost
+              ./b2 -j4 install
+              ;;
+          esac
+
+      - name: 配置
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          ${{ matrix.cmake_args }}
+
+      - name: 构建
+        run: cmake --build build --parallel 4
+
+      - name: 测试
+        run: ctest --test-dir build --output-on-failure
+
+  package-consumer:
+    name: linux 三方库使用方式 (find_package / add_subdirectory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++-13 libboost-filesystem-dev libboost-system-dev
+
+      - name: 构建并安装 watchman
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWATCHMAN_BUILD_TESTS=OFF \
+            -DWATCHMAN_BUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$HOME/watchman-prefix"
+          cmake --build build --target install
+
+      - name: 以 find_package 方式使用
+        run: |
+          cmake -S ci/consumer -B consumer-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$HOME/watchman-prefix"
+          cmake --build consumer-build
+          ./consumer-build/watchman_consumer
+
+      - name: 以 add_subdirectory 方式使用
+        run: |
+          cmake -S ci/consumer -B consumer-subdir -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWATCHMAN_CONSUMER_USE_SUBDIRECTORY=ON \
+            -DWATCHMAN_CONSUMER_SOURCE_DIR="$GITHUB_WORKSPACE"
+          cmake --build consumer-subdir
+          ./consumer-subdir/watchman_consumer

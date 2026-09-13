@@ -1,5 +1,7 @@
 ﻿# 一个基于 boost.asio 的文件监视库
 
+[![ci](https://github.com/Jackarain/watchman/actions/workflows/ci.yml/badge.svg)](https://github.com/Jackarain/watchman/actions/workflows/ci.yml)
+
 watchman 是一个 header-only 的 C++20 目录监视库，把各平台的文件系统通知
 接口统一到 boost.asio 的异步模型上：等待动作支持任意 completion token，
 处理函数在自己的关联执行器上被调用，取消使用 asio 的取消槽。
@@ -77,6 +79,19 @@ $ cmake --build build
 $ ctest --test-dir build --output-on-failure
 ```
 
+**持续集成**
+`.github/workflows/ci.yml` 覆盖以下平台与编译器组合：
+- Linux：GCC 12/13/14、Clang 16/17/18，x64 与 arm64，Debug 与 Release，另有 `-Wall -Wextra -Wpedantic -Werror` 组合
+- 最低版本：GCC 11 配 Boost 1.78（README 声明的最低 Boost 版本，源码构建）
+- macOS：AppleClang（arm64 与 x64）与 Homebrew LLVM
+- Windows：MSVC x64 / x86，Debug 与 Release
+- MinGW：MSYS2 的 UCRT64、MINGW64、CLANG64、CLANGARM64
+- 虚拟机：FreeBSD（clang 与 gcc）、OpenBSD、NetBSD、OmniOS（illumos）
+- 三方库使用方式：安装后 `find_package(watchman CONFIG)` 与直接 `add_subdirectory`
+
+虚拟机上的任务只在推送到默认分支与手动触发时运行，其中 OpenBSD、NetBSD、
+OmniOS 与 CLANGARM64 暂时作为实验平台，失败不会挡住合并。
+
 **作为三方库使用**
 - 子目录方式：`add_subdirectory(watchman)` 后链接 `watchman::watchman`
 - FetchContent 方式：
@@ -101,8 +116,9 @@ target_link_libraries(app PRIVATE watchman::watchman)
 - `tests/notify_event_test.cpp`、`tests/path_exclusion_test.cpp`：事件类型与路径排除规则
 - `tests/wait_queue_test.cpp`：等待队列与后台事件泵（顺序、缓存、取消、关闭）
 - `tests/platform_test.cpp`：各平台实现的接口一致性（concept）与具体执行器绑定
-- `tests/watch_service_test.cpp`：目录监视的端到端用例，目前只在 Linux 上运行
-- `tests/platform/`：BSD 与 Solaris 后端在本地缺少系统头文件时，使用桩接口做编译期检查
+- `tests/watch_service_test.cpp`：目录监视的端到端用例，在带监视后端的平台上运行
+- `tests/platform/`：BSD、macOS 与 Solaris 后端在本地缺少系统头文件时，使用桩接口做编译期检查
+- `ci/consumer/`：以安装后的包或源码子目录引入 watchman 的消费者检查
 
 **排除规则**
 - `excluded_dirs` 中的目录及其子目录不会产生事件，也不会被递归监视
