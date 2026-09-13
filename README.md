@@ -104,6 +104,7 @@ target_link_libraries(app PRIVATE watchman::watchman)
 ```
 - 安装后查找：`find_package(watchman CONFIG REQUIRED)`，再链接 `watchman::watchman`
 - 以三方库方式引入时，`WATCHMAN_BUILD_EXAMPLES`、`WATCHMAN_BUILD_TESTS`、`WATCHMAN_INSTALL` 默认关闭
+- 两种引入方式的完整例子见 `examples/consumer/`，它同时是 CI 里的消费者检查
 
 **平台实现说明**
 - Windows：重叠 I/O + `CancelIoEx`，每个等待自带读缓冲区
@@ -119,7 +120,7 @@ target_link_libraries(app PRIVATE watchman::watchman)
 - `tests/platform_test.cpp`：各平台实现的接口一致性（concept）与具体执行器绑定
 - `tests/watch_service_test.cpp`：目录监视的端到端用例，在带监视后端的平台上运行
 - `tests/platform/`：BSD、macOS 与 Solaris 后端在本地缺少系统头文件时，使用桩接口做编译期检查
-- `ci/consumer/`：以安装后的包或源码子目录引入 watchman 的消费者检查
+- `examples/consumer/`：以安装后的包或源码子目录引入 watchman 的消费者检查
 
 **排除规则**
 - `excluded_dirs` 中的目录及其子目录不会产生事件，也不会被递归监视

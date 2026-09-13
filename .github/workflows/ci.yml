@@ -433,14 +433,14 @@ jobs:
 
       - name: 以 find_package 方式使用
         run: |
-          cmake -S ci/consumer -B consumer-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S examples/consumer -B consumer-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$HOME/watchman-prefix"
           cmake --build consumer-build
           ./consumer-build/watchman_consumer
 
       - name: 以 add_subdirectory 方式使用
         run: |
-          cmake -S ci/consumer -B consumer-subdir -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S examples/consumer -B consumer-subdir -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DWATCHMAN_CONSUMER_USE_SUBDIRECTORY=ON \
             -DWATCHMAN_CONSUMER_SOURCE_DIR="$GITHUB_WORKSPACE"
           cmake --build consumer-subdir
