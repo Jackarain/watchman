@@ -111,7 +111,10 @@ enum
 	kFSEventStreamEventFlagItemRemoved = 0x00000200,
 	kFSEventStreamEventFlagItemInodeMetaMod = 0x00000400,
 	kFSEventStreamEventFlagItemRenamed = 0x00000800,
-	kFSEventStreamEventFlagItemModified = 0x00001000
+	kFSEventStreamEventFlagItemModified = 0x00001000,
+	kFSEventStreamEventFlagItemFinderInfoMod = 0x00002000,
+	kFSEventStreamEventFlagItemChangeOwner = 0x00004000,
+	kFSEventStreamEventFlagItemXattrMod = 0x00008000
 };
 
 #define kFSEventStreamEventIdSinceNow ((FSEventStreamEventId)0xFFFFFFFFFFFFFFFFULL)

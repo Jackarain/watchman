@@ -22,6 +22,7 @@
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -31,6 +32,7 @@
 
 #include <CoreServices/CoreServices.h>
 #include <cerrno>
+#include <cstddef>
 #include <cstring>
 #include <dispatch/dispatch.h>
 
@@ -165,6 +167,9 @@ namespace watchman {
 
 		// ---------- FSEvents ----------
 
+		// FSEvents 的合并窗口，取小值让事件尽快上报。
+		static constexpr CFTimeInterval stream_latency = 0.01;
+
 		FSEventStreamRef create_stream(const fs::path& dir,
 			boost::system::error_code& ec)
 		{
@@ -206,7 +211,7 @@ namespace watchman {
 				&m_stream_ctx,
 				paths,
 				kFSEventStreamEventIdSinceNow,
-				1,
+				stream_latency,
 				flags);
 
 			CFRelease(paths);
@@ -258,31 +263,77 @@ namespace watchman {
 			const macos_watch_service<Executor>& self)
 		{
 			notify_events batch;
+			std::vector<fs::path> rename_sources;
+			std::vector<fs::path> rename_targets;
+
 			CFArrayRef event_array = static_cast<CFArrayRef>(event_paths);
 
 			for (size_t i = 0; i < num_events; ++i)
 			{
-				std::string path;
+				const event_type type = type_from_flags(event_flags[i]);
 
-				if (!extract_path(event_array, i, path))
+				if (type == event_type::unknown)
 					continue;
 
-				fs::path event_path;
+				std::string reported;
 
-				if (!self.to_watch_path(path, event_path))
+				if (!extract_path(event_array, i, reported))
 					continue;
 
-				if (self.is_excluded(event_path))
+				fs::path path;
+
+				if (!self.to_entry_path(reported, path))
 					continue;
 
-				notify_event event;
-				event.path_ = std::move(event_path);
-				event.type_ = type_from_flags(event_flags[i]);
-
-				batch.push_back(std::move(event));
+				if (type == event_type::rename)
+					split_rename(path, rename_sources, rename_targets);
+				else
+					batch.push_back(make_event(type, path));
 			}
 
+			append_renames(batch, rename_sources, rename_targets);
+
 			return batch;
+		}
+
+		static notify_event make_event(event_type type, const fs::path& path,
+			const fs::path& new_path = {})
+		{
+			notify_event event;
+			event.type_ = type;
+			event.path_ = path;
+			event.new_path_ = new_path;
+
+			return event;
+		}
+
+		// 重命名事件按路径当前是否还在，分成原路径与目标路径两侧。
+		static void split_rename(const fs::path& path,
+			std::vector<fs::path>& sources, std::vector<fs::path>& targets)
+		{
+			if (fs::exists(path))
+				targets.push_back(path);
+			else
+				sources.push_back(path);
+		}
+
+		// FSEvents 不给出重命名两侧的对应关系，同一批里成对的合成一个带
+		// new_path_ 的事件，落单的按单侧事件报告。
+		static void append_renames(notify_events& batch,
+			const std::vector<fs::path>& sources,
+			const std::vector<fs::path>& targets)
+		{
+			const std::size_t paired = std::min(sources.size(), targets.size());
+
+			for (std::size_t i = 0; i < paired; ++i)
+				batch.push_back(make_event(event_type::rename,
+					sources[i], targets[i]));
+
+			for (std::size_t i = paired; i < sources.size(); ++i)
+				batch.push_back(make_event(event_type::rename, sources[i]));
+
+			for (std::size_t i = paired; i < targets.size(); ++i)
+				batch.push_back(make_event(event_type::rename, targets[i]));
 		}
 
 		// 取监视目录的真实路径，失败时退回原路径。
@@ -295,17 +346,22 @@ namespace watchman {
 		}
 
 		// 把 FSEvents 报出的真实路径换回注册时的路径形式，返回 false 表示
-		// 事件不在监视目录下。FSEvents 一般上报解析过符号链接的真实路径，
-		// 这里先按建流路径换算，再兼容未解析的形式。
-		bool to_watch_path(const std::string& reported, fs::path& path) const
+		// 事件与监视目录下的条目无关。FSEvents 一般上报解析过符号链接的
+		// 真实路径，这里先按建流路径换算，再兼容未解析的形式。
+		bool to_entry_path(const std::string& reported, fs::path& path) const
 		{
 			const fs::path full(reported);
 			const fs::path& dir = this->watch_dir();
 
-			if (detail::remap_under(m_stream_dir, dir, full, path))
-				return true;
+			if (!detail::remap_under(m_stream_dir, dir, full, path)
+				&& !detail::remap_under(dir, dir, full, path))
+				return false;
 
-			return detail::remap_under(dir, dir, full, path);
+			// 目录自身的变化不产生条目事件。
+			if (path == dir)
+				return false;
+
+			return !this->is_excluded(path);
 		}
 
 		// 从扩展数据字典里取出事件路径；取不到时返回 false。
@@ -345,20 +401,28 @@ namespace watchman {
 
 		static event_type type_from_flags(FSEventStreamEventFlags flags) noexcept
 		{
+			if (flags & kFSEventStreamEventFlagItemRenamed)
+				return event_type::rename;
+
 			if (flags & kFSEventStreamEventFlagItemCreated)
 				return event_type::creation;
 
 			if (flags & kFSEventStreamEventFlagItemRemoved)
 				return event_type::deletion;
 
-			if (flags & kFSEventStreamEventFlagItemRenamed)
-				return event_type::rename;
-
-			if (flags & kFSEventStreamEventFlagItemModified)
+			if (flags & modification_flags)
 				return event_type::modification;
 
 			return event_type::unknown;
 		}
+
+		// FSEvents 用一组标志表示内容与元数据的变化，这里统一算作修改。
+		static constexpr FSEventStreamEventFlags modification_flags =
+			kFSEventStreamEventFlagItemModified |
+			kFSEventStreamEventFlagItemInodeMetaMod |
+			kFSEventStreamEventFlagItemChangeOwner |
+			kFSEventStreamEventFlagItemFinderInfoMod |
+			kFSEventStreamEventFlagItemXattrMod;
 
 	private:
 		FSEventStreamContext m_stream_ctx{};
