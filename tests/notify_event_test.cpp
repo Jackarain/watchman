@@ -9,11 +9,11 @@
 //
 //
 
-#include <string>
+#include "test_util.hpp"
 
 #include <watchman/notify_event.hpp>
 
-#include "test_util.hpp"
+#include <string>
 
 int main()
 {

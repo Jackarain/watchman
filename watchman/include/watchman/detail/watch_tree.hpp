@@ -11,18 +11,19 @@
 
 #pragma once
 
-#include <cstdint>
+#include "watchman/detail/dir_scan.hpp"
+#include "watchman/detail/path_exclusion.hpp"
+#include "watchman/notify_event.hpp"
+
+#include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
+
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include <boost/filesystem.hpp>
-#include <boost/system/error_code.hpp>
-
-#include "watchman/detail/dir_scan.hpp"
-#include "watchman/detail/path_exclusion.hpp"
-#include "watchman/notify_event.hpp"
+#include <cstdint>
 
 namespace watchman {
 	namespace detail {

@@ -11,13 +11,8 @@
 
 #pragma once
 
-#include <cstdint>
-#include <memory>
-#include <string>
-#include <string_view>
-#include <type_traits>
-#include <utility>
-#include <vector>
+#include "watchman/detail/watch_service_base.hpp"
+#include "watchman/notify_event.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
@@ -27,14 +22,20 @@
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <memory>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#include <cstdint>
+
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
 #endif // !WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
-
-#include "watchman/detail/watch_service_base.hpp"
-#include "watchman/notify_event.hpp"
 
 namespace watchman {
 

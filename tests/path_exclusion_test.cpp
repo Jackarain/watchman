@@ -9,11 +9,11 @@
 //
 //
 
-#include <vector>
+#include "test_util.hpp"
 
 #include <watchman/detail/path_exclusion.hpp>
 
-#include "test_util.hpp"
+#include <vector>
 
 int main()
 {

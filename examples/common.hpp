@@ -11,10 +11,10 @@
 
 #pragma once
 
+#include <watchman/watchman.hpp>
+
 #include <iostream>
 #include <utility>
-
-#include <watchman/watchman.hpp>
 
 namespace watchman {
 	namespace example {

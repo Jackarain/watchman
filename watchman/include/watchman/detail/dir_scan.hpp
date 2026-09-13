@@ -11,12 +11,12 @@
 
 #pragma once
 
+#include <boost/filesystem.hpp>
+
 #include <algorithm>
 #include <iterator>
 #include <string>
 #include <vector>
-
-#include <boost/filesystem.hpp>
 
 namespace watchman {
 	namespace detail {

@@ -9,6 +9,18 @@
 //
 //
 
+#include "test_util.hpp"
+
+#include <watchman/watchman.hpp>
+
+#include <boost/asio/bind_cancellation_slot.hpp>
+#include <boost/asio/bind_executor.hpp>
+#include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/use_future.hpp>
+
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
@@ -19,18 +31,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <boost/asio/cancellation_signal.hpp>
-#include <boost/asio/bind_executor.hpp>
-#include <boost/asio/bind_cancellation_slot.hpp>
-#include <boost/asio/executor_work_guard.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/asio/use_future.hpp>
-
-#include <watchman/watchman.hpp>
-
-#include "test_util.hpp"
 
 namespace {
 

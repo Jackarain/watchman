@@ -11,14 +11,7 @@
 
 #pragma once
 
-#include <algorithm>
-#include <atomic>
-#include <cstddef>
-#include <cstdint>
-#include <deque>
-#include <memory>
-#include <type_traits>
-#include <utility>
+#include "watchman/notify_event.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/associated_allocator.hpp>
@@ -30,7 +23,15 @@
 #include <boost/asio/post.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "watchman/notify_event.hpp"
+#include <algorithm>
+#include <atomic>
+#include <deque>
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+#include <cstddef>
+#include <cstdint>
 
 namespace watchman {
 	namespace net = boost::asio;

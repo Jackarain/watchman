@@ -11,8 +11,9 @@
 
 #pragma once
 
-#include <deque>
 #include <boost/filesystem.hpp>
+
+#include <deque>
 
 namespace watchman {
 	namespace fs = boost::filesystem;

@@ -9,14 +9,15 @@
 //
 //
 
-#include <cstdlib>
-#include <iostream>
-#include <string>
+#include "common.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/signal_set.hpp>
 
-#include "common.hpp"
+#include <iostream>
+#include <string>
+
+#include <cstdlib>
 
 int main(int argc, char* argv[])
 {

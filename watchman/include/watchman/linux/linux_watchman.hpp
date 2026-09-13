@@ -11,9 +11,15 @@
 
 #pragma once
 
+#include "watchman/detail/watch_service_base.hpp"
+#include "watchman/notify_event.hpp"
+
+#include <boost/asio/posix/stream_descriptor.hpp>
+#include <boost/bimap.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
+
 #include <array>
-#include <cerrno>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -23,15 +29,9 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/posix/stream_descriptor.hpp>
-#include <boost/bimap.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/system/error_code.hpp>
-
+#include <cerrno>
+#include <cstdint>
 #include <sys/inotify.h>
-
-#include "watchman/detail/watch_service_base.hpp"
-#include "watchman/notify_event.hpp"
 
 namespace watchman {
 

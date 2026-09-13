@@ -11,10 +11,7 @@
 
 #pragma once
 
-#include <concepts>
-#include <functional>
-#include <type_traits>
-#include <vector>
+#include <watchman/notify_event.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
@@ -23,7 +20,10 @@
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
-#include <watchman/notify_event.hpp>
+#include <concepts>
+#include <functional>
+#include <type_traits>
+#include <vector>
 
 namespace watchman {
 	namespace test {

@@ -11,18 +11,18 @@
 
 #pragma once
 
-#include <condition_variable>
-#include <mutex>
-#include <thread>
-#include <utility>
+#include "watchman/detail/wait_queue.hpp"
+#include "watchman/notify_event.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/system/error_code.hpp>
 
-#include "watchman/detail/wait_queue.hpp"
-#include "watchman/notify_event.hpp"
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+#include <utility>
 
 namespace watchman {
 	namespace detail {

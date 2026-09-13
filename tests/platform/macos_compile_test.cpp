@@ -12,16 +12,16 @@
 // FSEvents 后端的编译期检查：本地没有 macOS SDK 时使用 tests/platform/stub
 // 下的桩接口，保证这一份代码不会因为长期不被编译而失效。
 
-#include <type_traits>
+#include "watch_service_interface.hpp"
+
+#include <watchman/macos/macos_watchman.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/filesystem.hpp>
 
-#include <watchman/macos/macos_watchman.hpp>
-
-#include "watch_service_interface.hpp"
+#include <type_traits>
 
 namespace {
 

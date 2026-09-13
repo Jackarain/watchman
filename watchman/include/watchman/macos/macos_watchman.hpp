@@ -11,14 +11,9 @@
 
 #pragma once
 
-#include <atomic>
-#include <cerrno>
-#include <cstring>
-#include <memory>
-#include <mutex>
-#include <string>
-#include <utility>
-#include <vector>
+#include "watchman/detail/wait_queue.hpp"
+#include "watchman/detail/watch_service_base.hpp"
+#include "watchman/notify_event.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
@@ -26,12 +21,17 @@
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
-#include <CoreServices/CoreServices.h>
-#include <dispatch/dispatch.h>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "watchman/detail/wait_queue.hpp"
-#include "watchman/detail/watch_service_base.hpp"
-#include "watchman/notify_event.hpp"
+#include <CoreServices/CoreServices.h>
+#include <cerrno>
+#include <cstring>
+#include <dispatch/dispatch.h>
 
 namespace watchman {
 	namespace net = boost::asio;

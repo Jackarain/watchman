@@ -11,29 +11,27 @@
 
 #pragma once
 
-#include <string>
-#include <utility>
-#include <vector>
+#include "watchman/detail/path_exclusion.hpp"
+#include "watchman/detail/wait_queue.hpp"
+#include "watchman/notify_event.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/associated_allocator.hpp>
-#include <boost/asio/associated_executor.hpp>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/async_result.hpp>
-#include <boost/asio/associated_allocator.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
 #include <boost/asio/associated_executor.hpp>
-#include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/bind_allocator.hpp>
+#include <boost/asio/cancellation_type.hpp>
+#include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/throw_exception.hpp>
 
-#include "watchman/detail/path_exclusion.hpp"
-#include "watchman/detail/wait_queue.hpp"
-#include "watchman/notify_event.hpp"
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace watchman {
 	namespace net = boost::asio;

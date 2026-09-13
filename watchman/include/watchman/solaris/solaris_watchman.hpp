@@ -11,9 +11,17 @@
 
 #pragma once
 
+#include "watchman/detail/threaded_pump.hpp"
+#include "watchman/detail/watch_service_base.hpp"
+#include "watchman/detail/watch_tree.hpp"
+#include "watchman/notify_event.hpp"
+
+#include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
+
 #include <atomic>
-#include <cerrno>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -21,20 +29,12 @@
 #include <utility>
 #include <vector>
 
+#include <cerrno>
+#include <cstdint>
 #include <fcntl.h>
 #include <port.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/error.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/system/error_code.hpp>
-
-#include "watchman/detail/threaded_pump.hpp"
-#include "watchman/detail/watch_service_base.hpp"
-#include "watchman/detail/watch_tree.hpp"
-#include "watchman/notify_event.hpp"
 
 namespace watchman {
 
