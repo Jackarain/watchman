@@ -70,7 +70,7 @@ int main()
 
 **依赖**
 - C++20 编译器
-- Boost 1.78 及以上（需要 asio 的关联取消槽与 posix 描述符的按操作取消）
+- Boost 1.83 及以上（需要 asio 的关联取消槽、分配器绑定与 posix 描述符的按操作取消）
 
 **构建与测试**
 ```console
@@ -82,7 +82,7 @@ $ ctest --test-dir build --output-on-failure
 **持续集成**
 `.github/workflows/ci.yml` 覆盖以下平台与编译器组合：
 - Linux：GCC 12/13/14、Clang 16/17/18，x64 与 arm64，Debug 与 Release，另有 `-Wall -Wextra -Wpedantic -Werror` 组合
-- 最低版本：GCC 11 配 Boost 1.78（README 声明的最低 Boost 版本，源码构建）
+- 最低版本：GCC 11 配 Boost 1.83（README 声明的最低 Boost 版本，源码构建）
 - macOS：AppleClang（arm64 与 x64）与 Homebrew LLVM
 - Windows：MSVC x64 / x86，Debug 与 Release
 - MinGW：MSYS2 的 UCRT64、MINGW64、CLANG64、CLANGARM64

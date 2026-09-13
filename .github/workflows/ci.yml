@@ -78,15 +78,15 @@ jobs:
       - name: 测试
         run: ctest --test-dir build --output-on-failure
 
-  # README 声明 Boost 1.78 起可用，这里用源码构建的最低版本配合较旧的 GCC 验证。
+  # README 声明 Boost 1.83 起可用，这里用源码构建的最低版本配合较旧的 GCC 验证。
   boost-min:
-    name: linux gcc-11 Boost 1.78.0 (最低支持版本)
+    name: linux gcc-11 Boost 1.83.0 (最低支持版本)
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
-      BOOST_PREFIX: ${{ github.workspace }}/boost-1.78
-      BOOST_RELEASE: 1.78.0
-      BOOST_DIR: boost_1_78_0
+      BOOST_PREFIX: ${{ github.workspace }}/boost-1.83
+      BOOST_RELEASE: 1.83.0
+      BOOST_DIR: boost_1_83_0
     steps:
       - uses: actions/checkout@v7
 
@@ -120,7 +120,6 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DBoost_ROOT="${BOOST_PREFIX}"
-          -DBOOST_ROOT="${BOOST_PREFIX}"
           -DCMAKE_PREFIX_PATH="${BOOST_PREFIX}"
 
       - name: 构建
