@@ -197,18 +197,23 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.BOOST_PREFIX }}
-          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}-v2
+          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}-v3
 
       # b2 的 bootstrap.bat 靠 vswhere 猜工具集，在较新的 Visual Studio 上会报
       # Unknown toolset，这里改用官方的 CMake 发行包。asio 是仅头文件的库，
       # 但它不在 filesystem 的依赖里，需要显式列上才会一起安装。
+      #
+      # Release 与 Debug 的静态库分别使用各自的运行库，只装其中一种会让另一种
+      # 构建类型在链接时报 LNK2038，因此两种变体都装上。
       - name: 构建 Boost
         if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
         run: |
           curl -sSL -o boost.tar.xz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.xz"
           tar -xJf boost.tar.xz
-          cmake -S "%BOOST_DIR%" -B boost-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
-          cmake --build boost-build --target install --parallel
+          cmake -S "%BOOST_DIR%" -B boost-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
+          cmake --build boost-build-release --target install --parallel
+          cmake -S "%BOOST_DIR%" -B boost-build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
+          cmake --build boost-build-debug --target install --parallel
 
       - name: 配置
         run: >
@@ -333,7 +338,7 @@ jobs:
             experimental: false
             packages: gcc14
             boost_source: true
-            cmake_args: '-DCMAKE_C_COMPILER=gcc14 -DCMAKE_CXX_COMPILER=g++14 -DBoost_ROOT=/tmp/boost -DCMAKE_PREFIX_PATH=/tmp/boost'
+            cmake_args: '-DCMAKE_C_COMPILER=gcc14 -DCMAKE_CXX_COMPILER=g++14 -DBoost_ROOT=/tmp/boost -DBoost_USE_STATIC_LIBS=ON -DCMAKE_PREFIX_PATH=/tmp/boost'
           - name: openbsd-7.9 clang Release
             os: openbsd
             version: '7.9'
@@ -351,7 +356,7 @@ jobs:
             version: 'r151056'
             experimental: true
             packages: ''
-            cmake_args: '-DCMAKE_C_COMPILER=/opt/gcc-14/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc-14/bin/g++ -DBoost_ROOT=/tmp/boost -DCMAKE_PREFIX_PATH=/tmp/boost'
+            cmake_args: '-DCMAKE_C_COMPILER=/opt/gcc-14/bin/gcc -DCMAKE_CXX_COMPILER=/opt/gcc-14/bin/g++ -DBoost_ROOT=/tmp/boost -DBoost_USE_STATIC_LIBS=ON -DCMAKE_PREFIX_PATH=/tmp/boost'
     steps:
       - uses: actions/checkout@v7
 
@@ -388,7 +393,9 @@ jobs:
             cd /tmp/boost_1_86_0
             ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem \
               --prefix=/tmp/boost
-            ./b2 -j4 install
+            # 这里只装静态库：illumos 上的 b2 会给共享库写下指向构建目录的
+            # 相对 DT_NEEDED，运行时会找不到依赖却又不报链接错误。
+            ./b2 -j4 install link=static
           }
 
           case "${{ matrix.os }}" in
