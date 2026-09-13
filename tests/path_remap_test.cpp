@@ -19,6 +19,7 @@ namespace {
 
 	namespace fs = boost::filesystem;
 
+	// 用 generic_string 比较，避免 Windows 上的路径分隔符差异。
 	std::string remap(const fs::path& real_root, const fs::path& base,
 		const fs::path& path)
 	{
@@ -27,7 +28,7 @@ namespace {
 		if (!watchman::detail::remap_under(real_root, base, path, result))
 			return {};
 
-		return result.string();
+		return result.generic_string();
 	}
 
 	void test_same_root()
