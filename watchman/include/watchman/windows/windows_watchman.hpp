@@ -53,7 +53,19 @@ namespace watchman {
 	private:
 		using base_type =
 			detail::watch_service_base<windows_watch_service<Executor>, Executor>;
-		using handle_type = net::windows::basic_overlapped_handle<Executor>;
+
+		// asio 的 overlapped handle 只把析构函数开放给派生类，这里派生出一个
+		// 可以正常析构的类型，其余行为保持不变。
+		class overlapped_handle
+			: public net::windows::basic_overlapped_handle<Executor>
+		{
+		public:
+			explicit overlapped_handle(const Executor& ex)
+				: net::windows::basic_overlapped_handle<Executor>(ex)
+			{}
+		};
+
+		using handle_type = overlapped_handle;
 
 		friend base_type;
 
