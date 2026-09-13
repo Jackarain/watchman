@@ -11,21 +11,21 @@
 
 #pragma once
 
-#include <type_traits>
-#include <utility>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
-#include <memory>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
 #include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_cancellation_slot.hpp>
-#include <boost/asio/windows/overlapped_ptr.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/windows/overlapped_handle.hpp>
+#include <boost/asio/windows/overlapped_ptr.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/throw_exception.hpp>
 #include <boost/system/error_code.hpp>
-#include <boost/system/system_error.hpp>
 
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
@@ -33,57 +33,101 @@
 
 #include <windows.h>
 
+#include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
-#include "watchman/detail/path_exclusion.hpp"
-
 
 namespace watchman {
 
 	namespace net = boost::asio;
 	namespace fs = boost::filesystem;
 
+	// Windows 使用 ReadDirectoryChangesW 递归监视目录树。
+	//
+	// 内核接口本身不支持取消，取消通过 CancelIoEx 完成；每个等待自带缓冲区，
+	// 可以并发发起。
 	template <typename Executor = net::any_io_executor>
-	class windows_watch_service : public net::windows::basic_overlapped_handle<Executor>
+	class windows_watch_service
+		: public detail::watch_service_base<windows_watch_service<Executor>, Executor>
 	{
 	private:
+		using base_type =
+			detail::watch_service_base<windows_watch_service<Executor>, Executor>;
+		using handle_type = net::windows::basic_overlapped_handle<Executor>;
+
+		friend base_type;
+
 		windows_watch_service(const windows_watch_service&) = delete;
 		windows_watch_service& operator=(const windows_watch_service&) = delete;
 
+		static constexpr DWORD buffer_size = 8192;
+
+		static constexpr DWORD event_filter =
+			FILE_NOTIFY_CHANGE_FILE_NAME |
+			FILE_NOTIFY_CHANGE_DIR_NAME |
+			FILE_NOTIFY_CHANGE_LAST_WRITE;
+
+		// 每个等待自带缓冲区。
+		struct read_state
+		{
+			windows_watch_service* service_ = nullptr;
+			std::unique_ptr<uint8_t[]> bufs_;
+
+			template <typename Handler>
+			void complete(Handler handler, boost::system::error_code ec,
+				std::size_t /*bytes*/)
+			{
+				notify_events events;
+
+				if (!ec)
+					service_->convert_result(bufs_.get(), events);
+
+				service_->dispatch_completion(std::move(handler), ec,
+					std::move(events));
+			}
+		};
+
 	public:
+		template <typename Executor1>
+		struct rebind
+		{
+			using other = windows_watch_service<Executor1>;
+		};
+
 		windows_watch_service(const Executor& ex, const fs::path& dir,
 			const std::vector<fs::path>& excluded_dirs = {})
-			: net::windows::basic_overlapped_handle<Executor>(
-				ex,
-				CreateFileW(dir.wstring().c_str(),
-					FILE_LIST_DIRECTORY,
-					FILE_SHARE_READ | FILE_SHARE_WRITE,
-					nullptr,
-					OPEN_EXISTING,
-					FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
-					nullptr))
-			, m_watch_dir(dir)
-			, m_excluded_dirs(excluded_dirs)
+			: base_type(ex, excluded_dirs)
+			, m_handle(ex)
 		{
+			this->open(dir);
 		}
 
 		explicit windows_watch_service(const Executor& ex,
 			const std::vector<fs::path>& excluded_dirs = {})
-			: net::windows::basic_overlapped_handle<Executor>(ex)
-			, m_excluded_dirs(excluded_dirs)
+			: base_type(ex, excluded_dirs)
+			, m_handle(ex)
 		{}
-		~windows_watch_service() = default;
+
+		~windows_watch_service()
+		{
+			boost::system::error_code ignore_ec;
+			this->close(ignore_ec);
+		}
 
 		windows_watch_service(windows_watch_service&&) = default;
 		windows_watch_service& operator=(windows_watch_service&&) = default;
 
-		inline void open(const fs::path& dir, boost::system::error_code& ec)
+		// 底层的目录句柄。
+		HANDLE native_handle() const noexcept { return m_handle.native_handle(); }
+
+	private:
+		// ---------- watch_service_base 要求的实现 ----------
+
+		void open_impl(const fs::path& dir, boost::system::error_code& ec)
 		{
-			m_watch_dir = dir;
+			boost::system::error_code ignore_ec;
+			close_impl(ignore_ec);
 
-			if (this->is_open())
-				this->close();
-
-			auto h = CreateFileW(dir.wstring().c_str(),
+			const HANDLE handle = ::CreateFileW(dir.wstring().c_str(),
 				FILE_LIST_DIRECTORY,
 				FILE_SHARE_READ | FILE_SHARE_WRITE,
 				nullptr,
@@ -91,108 +135,107 @@ namespace watchman {
 				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
 				nullptr);
 
-			this->assign(h, ec);
-		}
-
-		inline void open(const fs::path& dir)
-		{
-			boost::system::error_code ec;
-			m_watch_dir = dir;
-			open(dir, ec);
-			throw_error(ec);
-		}
-
-		template <typename Handler>
-		BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(Handler,
-			void(boost::system::error_code, notify_events))
-			async_wait(Handler&& handler)
-		{
-			return net::async_initiate<Handler,
-				void(boost::system::error_code, notify_events)>
-				([this](auto&& handler) mutable
-				{
-					using HandlerType =
-						std::decay_t<decltype(handler)>;
-
-					start_op(std::forward<HandlerType>(handler));
-				}, handler);
-		}
-
-
-	private:
-		template <typename Handler>
-		void start_op(Handler&& handler)
-		{
-			auto slot = net::get_associated_cancellation_slot(handler);
-			using unique_array_ptr = std::unique_ptr<uint8_t[]>;
-
-			const DWORD buffer_size = 8192;
-			auto bufs = unique_array_ptr(new uint8_t[buffer_size]);
-			auto buffer = bufs.get();
-
-			std::memset(buffer, 0, buffer_size);
-
-			auto inside_handler =
-				[this,
-				bufs = std::move(bufs),
-				handler = std::forward<Handler>(handler)]
-			(boost::system::error_code ec, size_t bytes_transferred) mutable
+			if (handle == INVALID_HANDLE_VALUE)
 			{
-				notify_events result;
+				ec.assign(static_cast<int>(::GetLastError()),
+					boost::system::system_category());
 
-				if (ec)
-				{
-					handler(ec, result);
-					return;
-				}
-
-				this->convert_result(bufs.get(), result);
-
-				handler(ec, result);
-			};
-
-			net::windows::overlapped_ptr op(
-				this->get_executor(), std::move(inside_handler));
-
-			if (slot.is_connected())
-			{
-				slot.assign([handle = this->native_handle(),
-					op = op.get()](auto type) mutable
-				{
-					if (net::cancellation_type::none != type)
-						::CancelIoEx(handle, op);
-				});
+				return;
 			}
+
+			m_handle.assign(handle, ec);
+		}
+
+		void close_impl(boost::system::error_code& ec)
+		{
+			m_handle.close(ec);
+		}
+
+		void cancel_impl(boost::system::error_code& ec)
+		{
+			if (!m_handle.is_open())
+			{
+				ec = net::error::bad_descriptor;
+				return;
+			}
+
+			// nullptr 表示取消该句柄上所有未完成的请求。
+			if (!::CancelIoEx(m_handle.native_handle(), nullptr))
+			{
+				const DWORD last_error = ::GetLastError();
+
+				if (last_error != ERROR_NOT_FOUND)
+				{
+					ec.assign(static_cast<int>(last_error),
+						boost::system::system_category());
+				}
+			}
+		}
+
+		bool is_open_impl() const noexcept
+		{
+			return m_handle.is_open();
+		}
+
+		template <typename Handler>
+		void async_wait_impl(Handler&& handler)
+		{
+			using handler_type = std::decay_t<Handler>;
+
+			// 处理函数随后会被移动，取消槽需要提前取出。
+			const auto slot = net::get_associated_cancellation_slot(handler);
+
+			read_state state;
+			state.service_ = this;
+			state.bufs_.reset(new uint8_t[buffer_size]);
+
+			auto* buffer = state.bufs_.get();
+
+			net::windows::overlapped_ptr op(m_handle.get_executor(),
+				detail::state_handler<handler_type, read_state>(
+					std::forward<Handler>(handler), std::move(state),
+					this->get_executor()));
+
+			assign_op_cancellation(slot, op.get());
 
 			DWORD transferred = 0;
+			const BOOL ok = ::ReadDirectoryChangesW(m_handle.native_handle(),
+				buffer, buffer_size, TRUE, event_filter, &transferred,
+				op.get(), nullptr);
 
-			BOOL ok = ReadDirectoryChangesW(
-				this->native_handle(),
-				buffer,
-				buffer_size,
-				true,
-				0x1FF,
-				&transferred,
-				op.get(),
-				nullptr);
-
-			DWORD last_error = GetLastError();
-			if (!ok &&
-				last_error != ERROR_IO_PENDING &&
-				last_error != ERROR_MORE_DATA)
-			{
-				boost::system::error_code ec{
-					static_cast<int>(last_error),
-					boost::system::system_category()
-				};
-
-				op.complete(ec, (size_t)(transferred));
-			}
-			else
+			if (ok)
 			{
 				op.release();
+				return;
 			}
+
+			const DWORD last_error = ::GetLastError();
+
+			if (last_error == ERROR_IO_PENDING || last_error == ERROR_MORE_DATA)
+			{
+				op.release();
+				return;
+			}
+
+			op.complete(boost::system::error_code(static_cast<int>(last_error),
+				boost::system::system_category()), transferred);
 		}
+
+		// 取消通过 CancelIoEx 完成，需要绑定本次操作的 OVERLAPPED。
+		void assign_op_cancellation(net::cancellation_slot slot, OVERLAPPED* op)
+		{
+			if (!slot.is_connected())
+				return;
+
+			const HANDLE handle = m_handle.native_handle();
+
+			this->assign_cancellation(slot, [handle, op]
+				{
+					::CancelIoEx(handle, op);
+				});
+		}
+
+		// ---------- 事件转换 ----------
 
 		inline constexpr event_type notify_type(DWORD action) const
 		{
@@ -212,11 +255,6 @@ namespace watchman {
 			}
 		}
 
-		bool is_excluded(const fs::path& path) const
-		{
-			return detail::is_excluded(m_excluded_dirs, path);
-		}
-
 		inline void convert_result(uint8_t* data, notify_events& result) const
 		{
 			auto item = (PFILE_NOTIFY_INFORMATION)data;
@@ -224,29 +262,35 @@ namespace watchman {
 
 			for (;;)
 			{
-				std::wstring_view filename{ item->FileName, item->FileNameLength / 2 };
+				std::wstring_view filename{ item->FileName,
+					item->FileNameLength / 2 };
 
 				if (item->Action == FILE_ACTION_RENAMED_OLD_NAME)
 				{
 					e.type_ = notify_type(item->Action);
-					e.path_ = m_watch_dir / filename;
+					e.path_ = this->watch_dir() / filename;
 
 					if (item->NextEntryOffset != 0)
-						item = (PFILE_NOTIFY_INFORMATION)((uint8_t*)item + item->NextEntryOffset);
+					{
+						item = (PFILE_NOTIFY_INFORMATION)(
+							(uint8_t*)item + item->NextEntryOffset);
+					}
 				}
+
 				if (item->Action == FILE_ACTION_RENAMED_NEW_NAME)
 				{
-					e.new_path_ = m_watch_dir / filename;
+					e.new_path_ = this->watch_dir() / filename;
 				}
 				else
 				{
 					e.type_ = notify_type(item->Action);
-					e.path_ = m_watch_dir / filename;
+					e.path_ = this->watch_dir() / filename;
 				}
 
 				// 跳过被排除目录中的事件。
-				if (!is_excluded(e.path_))
+				if (!this->is_excluded(e.path_))
 					result.emplace_back(e);
+
 				e = {};
 
 				if (item->NextEntryOffset == 0)
@@ -256,18 +300,9 @@ namespace watchman {
 			}
 		}
 
-		inline void throw_error(const boost::system::error_code& err,
-			boost::source_location const& loc = BOOST_CURRENT_LOCATION)
-		{
-			if (err)
-				boost::throw_exception(boost::system::system_error{ err }, loc);
-		}
-
-
 	private:
-		fs::path m_watch_dir;
-		std::vector<fs::path> m_excluded_dirs;
+		handle_type m_handle;
 	};
 
 	using windows_watch = windows_watch_service<>;
-}
+} // namespace watchman

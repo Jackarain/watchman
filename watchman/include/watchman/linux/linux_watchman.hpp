@@ -11,27 +11,27 @@
 
 #pragma once
 
-#include <type_traits>
-#include <utility>
+#include <array>
+#include <cerrno>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
-#include <array>
-#include <memory>
+#include <utility>
+#include <vector>
 
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
-#include <boost/asio/associated_cancellation_slot.hpp>
-
-#include <boost/filesystem.hpp>
 #include <boost/bimap.hpp>
-#include <boost/throw_exception.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <sys/inotify.h>
 
-#include "watchman/detail/path_exclusion.hpp"
+#include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
-
 
 namespace watchman {
 
@@ -39,298 +39,416 @@ namespace watchman {
 	namespace fs = boost::filesystem;
 
 	inline const size_t read_buffer_size = 8192;
+
+	// Linux 使用 inotify 递归监视目录树。
+	//
+	// 等待动作直接交给 asio 的描述符操作，因此按操作取消、关联执行器等
+	// 语义都由 asio 提供；每个等待自带缓冲区，可以并发发起。
 	template <typename Executor = net::any_io_executor>
-	class linux_watch_service : public net::posix::basic_stream_descriptor<Executor>
+	class linux_watch_service
+		: public detail::watch_service_base<linux_watch_service<Executor>, Executor>
 	{
 	private:
+		using base_type =
+			detail::watch_service_base<linux_watch_service<Executor>, Executor>;
+		using descriptor_type = net::posix::basic_stream_descriptor<Executor>;
+		using watch_descriptors = boost::bimap<int, fs::path>;
+
+		friend base_type;
+
 		linux_watch_service(const linux_watch_service&) = delete;
 		linux_watch_service& operator=(const linux_watch_service&) = delete;
 
+		static constexpr std::uint32_t watch_mask =
+			static_cast<std::uint32_t>(IN_CREATE | IN_MODIFY |
+				IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE);
+
+		// 每个等待自带缓冲区，因此可以并发发起。
+		struct read_state
+		{
+			linux_watch_service* service_ = nullptr;
+			std::unique_ptr<std::array<char, read_buffer_size>> bufs_;
+
+			template <typename Handler>
+			void complete(Handler handler, boost::system::error_code ec,
+				std::size_t bytes)
+			{
+				notify_events events;
+
+				if (!ec)
+					service_->read_events(
+						std::string_view(bufs_->data(), bytes), events);
+
+				std::move(handler)(ec, std::move(events));
+			}
+		};
+
 	public:
+		template <typename Executor1>
+		struct rebind
+		{
+			using other = linux_watch_service<Executor1>;
+		};
+
 		linux_watch_service(const Executor& ex, const fs::path& dir,
 			const std::vector<fs::path>& excluded_dirs = {})
-			: net::posix::basic_stream_descriptor<Executor>(ex)
-			, m_watch_dir(dir)
-			, m_bufs(std::make_unique<std::array<char, read_buffer_size>>())
-			, m_excluded_dirs(excluded_dirs)
+			: base_type(ex, excluded_dirs)
+			, m_descriptor(ex)
 		{
-			open(dir);
+			this->open(dir);
 		}
+
 		explicit linux_watch_service(const Executor& ex,
 			const std::vector<fs::path>& excluded_dirs = {})
-			: net::posix::basic_stream_descriptor<Executor>(ex)
-			, m_bufs(std::make_unique<std::array<char, read_buffer_size>>())
-			, m_excluded_dirs(excluded_dirs)
+			: base_type(ex, excluded_dirs)
+			, m_descriptor(ex)
 		{}
-		~linux_watch_service() = default;
 
-		linux_watch_service(linux_watch_service&&) = default;
-		linux_watch_service& operator=(linux_watch_service&&) = default;
-
-		void open(const fs::path& dir, boost::system::error_code& ec)
+		~linux_watch_service()
 		{
-			this->close(ec);
-
-			this->assign(inotify_init1(IN_CLOEXEC | IN_NONBLOCK), ec);
-			m_watch_dir = dir;
-
-			add_directory(dir);
-			add_sub_directory(dir);
+			boost::system::error_code ignore_ec;
+			this->close(ignore_ec);
 		}
 
-		void open(const fs::path& dir)
-		{
-			this->close();
+		// 内部持有等待状态与互斥量，对象不可拷贝、不可移动。
+		linux_watch_service(linux_watch_service&&) = delete;
+		linux_watch_service& operator=(linux_watch_service&&) = delete;
 
-			this->assign(inotify_init1(IN_CLOEXEC | IN_NONBLOCK));
-			m_watch_dir = dir;
-
-			add_directory(dir);
-			add_sub_directory(dir);
-		}
-
-		template <typename Handler>
-		BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(Handler,
-			void(boost::system::error_code, notify_events))
-			async_wait(Handler&& handler)
-		{
-			return net::async_initiate<Handler,
-				void(boost::system::error_code, notify_events)>
-				([this](auto&& handler) mutable
-					{
-						using HandlerType =
-							std::decay_t<decltype(handler)>;
-
-						start_op(std::forward<HandlerType>(handler));
-					}, handler);
-		}
-
+		// 底层的 inotify 描述符。
+		int native_handle() const noexcept { return m_descriptor.native_handle(); }
 
 	private:
+		// ---------- watch_service_base 要求的实现 ----------
+
+		void open_impl(const fs::path& dir, boost::system::error_code& ec)
+		{
+			boost::system::error_code ignore_ec;
+			close_impl(ignore_ec);
+
+			m_descriptor.assign(inotify_init1(IN_CLOEXEC | IN_NONBLOCK), ec);
+
+			if (ec)
+				return;
+
+			{
+				std::lock_guard<std::mutex> lock(m_mtx);
+
+				if (add_tree(dir, ec))
+					return;
+			}
+
+			m_descriptor.close(ignore_ec);
+			clear_state();
+		}
+
+		void close_impl(boost::system::error_code& ec)
+		{
+			m_descriptor.close(ec);
+			clear_state();
+		}
+
+		void cancel_impl(boost::system::error_code& ec)
+		{
+			// 描述符本身保持打开，只中止未完成的等待。
+			m_descriptor.cancel(ec);
+		}
+
+		bool is_open_impl() const noexcept
+		{
+			return m_descriptor.is_open();
+		}
+
 		template <typename Handler>
-		void start_op(Handler&& handler)
+		void async_wait_impl(Handler&& handler)
 		{
-			std::memset(m_bufs.get(), 0, read_buffer_size);
+			using handler_type = std::decay_t<Handler>;
 
-			auto slot = net::get_associated_cancellation_slot(handler);
-			if (slot.is_connected())
-			{
-				slot.assign([this](auto type) mutable
-				{
-					if (boost::asio::cancellation_type::none != type)
-					{
-						boost::system::error_code ignore_ec;
-						this->cancel(ignore_ec);
-					}
-				});
-			}
+			read_state state;
+			state.service_ = this;
+			state.bufs_ = std::make_unique<std::array<char, read_buffer_size>>();
 
-			this->async_read_some(net::buffer(m_bufs.get(), read_buffer_size),
-				[this, handler = std::move(handler)](
-					boost::system::error_code ec,
-					std::size_t bytes_transferred) mutable
-				{
-					notify_events result;
+			auto* buffer = state.bufs_->data();
 
-					if (ec)
-					{
-						handler(ec, result);
-						return;
-					}
-
-					std::string_view sv((char*)m_bufs.get(), bytes_transferred);
-					this->convert_result(sv, result);
-
-					handler(ec, result);
-				});
+			m_descriptor.async_read_some(
+				net::buffer(buffer, read_buffer_size),
+				detail::state_handler<handler_type, read_state>(
+					std::forward<Handler>(handler), std::move(state),
+					this->get_executor()));
 		}
 
-		event_type notify_type(uint32_t action, bool& add) const
-		{
-			switch (action)
-			{
-			case IN_CREATE:
-				return event_type::creation;
-			case IN_DELETE:
-			case IN_DELETE | IN_ISDIR:
-				return event_type::deletion;
-			case IN_MODIFY:
-				return event_type::modification;
-			case IN_MOVED_FROM:
-				return event_type::rename;
-			case IN_MOVED_TO:
-				return event_type::rename;
-			case IN_CREATE | IN_ISDIR:
-				add = true;
-				return event_type::creation;
-			default:
-				break;
-			}
-			return event_type::unknown;
-		}
+		// ---------- inotify 事件解析 ----------
 
-		void convert_result(std::string_view sv, notify_events& result)
+		void read_events(std::string_view data, notify_events& events)
 		{
-			notify_event notify;
+			std::lock_guard<std::mutex> lock(m_mtx);
 
-			m_bufs_pending += std::string(sv);
+			m_bufs_pending.append(data);
 
 			while (m_bufs_pending.size() > sizeof(inotify_event))
 			{
-				const inotify_event* ev =
-					(const inotify_event*)(m_bufs_pending.data());
+				const inotify_event* event = current_event();
 
-				if (ev->mask & IN_IGNORED)
+				if (event->mask & IN_IGNORED)
 				{
-					m_bufs_pending.erase(0, sizeof(inotify_event) + ev->len);
+					drop_current_event();
 					continue;
 				}
 
-				bool add = false;
-				notify.type_ = notify_type(ev->mask, add);
-
-				fs::path filename;
-
-				std::optional<fs::path> fdir = find_dir(ev->wd);
-				if (fdir)
-					filename = *fdir / ev->name;
-				else
-					filename = ev->name;
-
-				notify.path_ = filename;
-
-				if (ev->mask & IN_MOVED_FROM)
-				{
-					if (ev->mask & IN_ISDIR)
-						remove_directory(filename);
-
-					m_bufs_pending.erase(0, sizeof(inotify_event) + ev->len);
-					if (m_bufs_pending.size() <= sizeof(inotify_event))
-						break;
-
-					ev = (const inotify_event*)(m_bufs_pending.data());
-
-					fdir = find_dir(ev->wd);
-					if (fdir)
-						filename = *fdir / ev->name;
-					else
-						filename = ev->name;
-				}
-
-				if (ev->mask & IN_MOVED_TO)
-				{
-					notify.new_path_ = filename;
-
-					if (ev->mask & IN_ISDIR)
-						add_directory(filename);
-				}
-
-				if (add)
-					add_directory(filename);
-				else if ((ev->mask & (IN_DELETE | IN_ISDIR)) == (IN_DELETE | IN_ISDIR))
-					remove_directory(filename);
-
-				result.push_back(notify);
-				notify = {};
-
-				m_bufs_pending.erase(0, sizeof(inotify_event) + ev->len);
+				parse_event(*event, events);
+				drop_current_event();
 			}
+
+			// 同一批数据中没有配对到移入的移出事件，按原路径上报。
+			flush_pending_renames(events);
 		}
 
-		std::optional<fs::path> find_dir(int wd)
+		void parse_event(const inotify_event& event, notify_events& events)
 		{
-			auto it = m_watch_descriptors.left.find(wd);
+			const fs::path path = event_path(event);
 
-			if (it != m_watch_descriptors.left.end())
-				return it->second;
+			if (event.mask & IN_MOVED_FROM)
+			{
+				on_moved_from(event, path);
+				return;
+			}
 
-			return {};
+			if (event.mask & IN_MOVED_TO)
+			{
+				on_moved_to(event, path, events);
+				return;
+			}
+
+			events.push_back(make_event(notify_type(event.mask), path));
+			update_watches(event.mask, path);
 		}
 
-		bool is_excluded(const fs::path& path) const
+		// 移出事件先记下 cookie，等同一批数据中的移入事件来配对。
+		void on_moved_from(const inotify_event& event, const fs::path& path)
 		{
-			return detail::is_excluded(m_excluded_dirs, path);
+			if (event.mask & IN_ISDIR)
+				remove_watch_tree(path);
+
+			m_pending_renames.emplace(event.cookie, path);
 		}
 
-		void add_directory(const fs::path& dir) noexcept
+		void on_moved_to(const inotify_event& event, const fs::path& path,
+			notify_events& events)
+		{
+			const auto it = m_pending_renames.find(event.cookie);
+
+			if (it == m_pending_renames.end())
+			{
+				events.push_back(make_event(event_type::rename, path));
+			}
+			else
+			{
+				notify_event notify = make_event(event_type::rename, it->second);
+				notify.new_path_ = path;
+				events.push_back(notify);
+
+				m_pending_renames.erase(it);
+			}
+
+			if (event.mask & IN_ISDIR)
+				add_tree_best_effort(path);
+		}
+
+		void flush_pending_renames(notify_events& events)
+		{
+			for (const auto& item : m_pending_renames)
+				events.push_back(make_event(event_type::rename, item.second));
+
+			m_pending_renames.clear();
+		}
+
+		void update_watches(std::uint32_t mask, const fs::path& path)
+		{
+			if ((mask & (IN_CREATE | IN_ISDIR)) == (IN_CREATE | IN_ISDIR))
+			{
+				add_tree_best_effort(path);
+				return;
+			}
+
+			if ((mask & (IN_DELETE | IN_ISDIR)) == (IN_DELETE | IN_ISDIR))
+				remove_watch_tree(path);
+		}
+
+		static event_type notify_type(std::uint32_t mask) noexcept
+		{
+			if (mask & IN_CREATE)
+				return event_type::creation;
+
+			if (mask & IN_DELETE)
+				return event_type::deletion;
+
+			if (mask & IN_MODIFY)
+				return event_type::modification;
+
+			if (mask & (IN_MOVED_FROM | IN_MOVED_TO))
+				return event_type::rename;
+
+			return event_type::unknown;
+		}
+
+		const inotify_event* current_event() const noexcept
+		{
+			return reinterpret_cast<const inotify_event*>(m_bufs_pending.data());
+		}
+
+		void drop_current_event()
+		{
+			m_bufs_pending.erase(0, sizeof(inotify_event) + current_event()->len);
+		}
+
+		fs::path event_path(const inotify_event& event) const
+		{
+			const auto dir = find_dir(event.wd);
+
+			if (dir)
+				return *dir / event.name;
+
+			// 目录本身已被移除时退化为条目名。
+			return event.name;
+		}
+
+		std::optional<fs::path> find_dir(int wd) const
+		{
+			const auto it = m_watch_descriptors.left.find(wd);
+
+			if (it == m_watch_descriptors.left.end())
+				return {};
+
+			return it->second;
+		}
+
+		// ---------- 监视树 ----------
+		//
+		// 以下函数都会读写 m_watch_descriptors，调用者需持有 m_mtx。
+
+		// 监视 dir 及其所有子目录，返回根目录是否注册成功。
+		bool add_tree(const fs::path& dir, boost::system::error_code& ec)
+		{
+			if (!add_directory(dir, ec))
+				return false;
+
+			add_sub_directories(dir);
+			return true;
+		}
+
+		// 新增目录时尽力登记，失败通常意味着目录已经被删除。
+		void add_tree_best_effort(const fs::path& dir)
+		{
+			boost::system::error_code ignore_ec;
+			add_directory(dir, ignore_ec);
+			add_sub_directories(dir);
+		}
+
+		// 被排除的目录与符号链接直接跳过，不算失败。
+		bool add_directory(const fs::path& dir, boost::system::error_code& ec)
+		{
+			ec.clear();
+
+			if (this->is_excluded(dir) || is_symlink(dir))
+				return true;
+
+			if (!fs::is_directory(dir, ec))
+			{
+				if (!ec)
+					ec.assign(boost::system::errc::not_a_directory,
+						boost::system::generic_category());
+
+				return false;
+			}
+
+			if (m_watch_descriptors.right.count(dir) != 0)
+				return true;
+
+			const int wd = inotify_add_watch(m_descriptor.native_handle(),
+				dir.c_str(), watch_mask);
+
+			if (wd < 0)
+			{
+				ec.assign(errno, boost::system::generic_category());
+				return false;
+			}
+
+			m_watch_descriptors.insert(watch_descriptors::value_type(wd, dir));
+			return true;
+		}
+
+		void add_sub_directories(const fs::path& dir)
 		{
 			boost::system::error_code ec;
-
-			if (!fs::is_directory(dir, ec) || ec)
-				return;
-
-			if (fs::is_symlink(dir, ec) || ec)
-				return;
-
-			// 跳过被排除的目录。
-			if (is_excluded(dir))
-				return;
-
-			auto wd = inotify_add_watch(
-				this->native_handle(),
-				dir.string().c_str(),
-				IN_CREATE |
-				IN_MODIFY |
-				IN_MOVED_FROM |
-				IN_MOVED_TO |
-				IN_DELETE);
-
-			if (wd >= 0)
-			{
-				m_watch_descriptors.insert(
-					watch_descriptors::value_type(wd, dir));
-			}
-		}
-
-		void remove_directory(const fs::path& dir) noexcept
-		{
-			auto it = m_watch_descriptors.right.find(dir);
-			if (it != m_watch_descriptors.right.end())
-			{
-				inotify_rm_watch(this->native_handle(), it->second);
-				m_watch_descriptors.right.erase(it);
-
-				try {
-					remove_sub_directory(dir);
-				} catch (const std::exception&) {
-				}
-			}
-		}
-
-		void remove_sub_directory(const fs::path& dir)
-		{
 			fs::directory_iterator end;
-			for (fs::directory_iterator it(dir); it != end; ++it)
-				remove_directory(*it);
-		}
 
-		void add_sub_directory(const fs::path& dir)
-		{
-			fs::directory_iterator end;
-			for (fs::directory_iterator it(dir); it != end; ++it)
+			for (fs::directory_iterator it(dir, ec); !ec && it != end; it.increment(ec))
 			{
-				boost::system::error_code ec;
-				const auto& item = *it;
+				const fs::path child = it->path();
 
-				if (!fs::is_directory(item, ec) || ec)
+				if (this->is_excluded(child) || !is_directory(child))
 					continue;
 
-				if (fs::is_symlink(item, ec) || ec)
-					continue;
-
-				add_directory(item);
-				add_sub_directory(item);
+				boost::system::error_code ignore_ec;
+				add_directory(child, ignore_ec);
+				add_sub_directories(child);
 			}
+		}
+
+		// 尚未收到 IN_IGNORED 的子目录需要按路径前缀一起清理。
+		void remove_watch_tree(const fs::path& dir)
+		{
+			std::vector<int> stale;
+
+			for (const auto& item : m_watch_descriptors.right)
+			{
+				if (detail::is_under(dir, item.first))
+					stale.push_back(item.second);
+			}
+
+			for (const int wd : stale)
+			{
+				inotify_rm_watch(m_descriptor.native_handle(), wd);
+				m_watch_descriptors.left.erase(wd);
+			}
+		}
+
+		void clear_state()
+		{
+			std::lock_guard<std::mutex> lock(m_mtx);
+
+			m_watch_descriptors.clear();
+			m_bufs_pending.clear();
+			m_pending_renames.clear();
+		}
+
+		static bool is_symlink(const fs::path& path)
+		{
+			boost::system::error_code ignore_ec;
+			return fs::is_symlink(path, ignore_ec);
+		}
+
+		static bool is_directory(const fs::path& path)
+		{
+			boost::system::error_code ignore_ec;
+			return fs::is_directory(path, ignore_ec);
+		}
+
+		static notify_event make_event(event_type type, const fs::path& path)
+		{
+			notify_event event;
+			event.type_ = type;
+			event.path_ = path;
+
+			return event;
 		}
 
 	private:
-		fs::path m_watch_dir;
-		std::vector<fs::path> m_excluded_dirs;
-		using watch_descriptors = boost::bimap<int, fs::path>;
+		descriptor_type m_descriptor;
+		std::mutex m_mtx;
 		watch_descriptors m_watch_descriptors;
-		std::unique_ptr<std::array<char, read_buffer_size>> m_bufs;
 		std::string m_bufs_pending;
+		std::map<std::uint32_t, fs::path> m_pending_renames;
 	};
 
 	using linux_watch = linux_watch_service<>;
-}
+} // namespace watchman

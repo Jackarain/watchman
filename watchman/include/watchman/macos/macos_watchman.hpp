@@ -1,4 +1,4 @@
-//
+﻿//
 // macos_watchman.hpp
 // ~~~~~~~~~~~~~~~~~~
 //
@@ -11,65 +11,74 @@
 
 #pragma once
 
-#include <iostream>
+#include <cstring>
+#include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
-#include <vector>
-#include <iterator>
-#include <cstring>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
-#include <boost/asio/post.hpp>
 #include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/async_result.hpp>
-#include <boost/asio/associated_cancellation_slot.hpp>
-
+#include <boost/asio/error.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/throw_exception.hpp>
-#include <boost/system.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <CoreServices/CoreServices.h>
 
-
+#include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
-#include "watchman/detail/path_exclusion.hpp"
 
 namespace watchman {
     namespace net = boost::asio;
     namespace fs = boost::filesystem;
 
+    // macOS 使用 FSEvents 监视目录树。
+    //
+    // FSEvents 在独立的 dispatch 队列上回调，事件先进入内部队列，等待动作
+    // 只是取走已经攒下的事件，因此取消等待没有实际动作。
     template <typename Executor = net::any_io_executor>
     class macos_watch_service
+        : public detail::watch_service_base<macos_watch_service<Executor>, Executor>
     {
     private:
+        using base_type =
+            detail::watch_service_base<macos_watch_service<Executor>, Executor>;
+
+        friend base_type;
+
         macos_watch_service(const macos_watch_service&) = delete;
         macos_watch_service& operator=(const macos_watch_service&) = delete;
 
     public:
+        template <typename Executor1>
+        struct rebind
+        {
+            using other = macos_watch_service<Executor1>;
+        };
+
         macos_watch_service(const Executor& ex, const fs::path& dir,
             const std::vector<fs::path>& excluded_dirs = {})
-            : m_executor(ex)
-            , m_excluded_dirs(excluded_dirs)
+            : base_type(ex, excluded_dirs)
         {
-            open(dir);
+            this->open(dir);
         }
 
         explicit macos_watch_service(const Executor& ex,
             const std::vector<fs::path>& excluded_dirs = {})
-            : m_executor(ex)
-            , m_excluded_dirs(excluded_dirs)
+            : base_type(ex, excluded_dirs)
         {}
 
         ~macos_watch_service()
         {
             boost::system::error_code ignore_ec;
-            close(ignore_ec);
+            this->close(ignore_ec);
         }
 
         // 自定义移动语义：关闭源对象的流后转移所有权，避免原始指针双重释放。
         macos_watch_service(macos_watch_service&& other) noexcept
-            : m_executor(std::move(other.m_executor))
-            , m_watch_dir(std::move(other.m_watch_dir))
+            : base_type(std::move(other))
             , m_stream(other.m_stream)
             , m_fsevents_queue(other.m_fsevents_queue)
             , m_events(std::move(other.m_events))
@@ -83,10 +92,10 @@ namespace watchman {
             if (this != &other)
             {
                 boost::system::error_code ignore_ec;
-                close(ignore_ec);
+                this->close(ignore_ec);
 
-                m_executor = std::move(other.m_executor);
-                m_watch_dir = std::move(other.m_watch_dir);
+                base_type::operator=(std::move(other));
+
                 m_stream = other.m_stream;
                 m_fsevents_queue = other.m_fsevents_queue;
                 m_events = std::move(other.m_events);
@@ -97,10 +106,13 @@ namespace watchman {
             return *this;
         }
 
-    public:
-        inline void open(const fs::path& dir, boost::system::error_code& ec)
+    private:
+        // ---------- watch_service_base 要求的实现 ----------
+
+        void open_impl(const fs::path& dir, boost::system::error_code& ec)
         {
-            m_watch_dir = dir;
+            boost::system::error_code ignore_ec;
+            close_impl(ignore_ec);
 
             CFStringRef dir_ref = CFStringCreateWithCString(
                 nullptr, dir.c_str(), kCFStringEncodingUTF8);
@@ -133,18 +145,19 @@ namespace watchman {
             context->release = nullptr;
             context->copyDescription = nullptr;
 
-            FSEventStreamCreateFlags streamFlags = kFSEventStreamCreateFlagFileEvents;
+            FSEventStreamCreateFlags streamFlags =
+                kFSEventStreamCreateFlagFileEvents;
             streamFlags |= kFSEventStreamCreateFlagNoDefer;
             streamFlags |= kFSEventStreamCreateFlagUseExtendedData;
             streamFlags |= kFSEventStreamCreateFlagUseCFTypes;
 
             m_stream = FSEventStreamCreate(nullptr,
-                                 &macos_watch_service<Executor>::fsevents_callback,
-                                 context,
-                                 paths,
-                                 kFSEventStreamEventIdSinceNow,
-                                 1,
-                                 streamFlags);
+                &macos_watch_service<Executor>::fsevents_callback,
+                context,
+                paths,
+                kFSEventStreamEventIdSinceNow,
+                1,
+                streamFlags);
 
             CFRelease(paths);
 
@@ -156,81 +169,55 @@ namespace watchman {
 
             m_fsevents_queue = dispatch_queue_create("fswatch_event_queue", nullptr);
             FSEventStreamSetDispatchQueue(m_stream, m_fsevents_queue);
-            FSEventStreamStart(m_stream);
-        }
 
-        inline void open(const fs::path& dir)
-        {
-            boost::system::error_code ec;
-            open(dir, ec);
-            throw_error(ec);
-        }
-
-        void close(boost::system::error_code& ec)
-        {
-            if (m_stream == nullptr)
+            if (FSEventStreamStart(m_stream))
                 return;
 
-            FSEventStreamStop(m_stream);
-            FSEventStreamInvalidate(m_stream);
-            FSEventStreamRelease(m_stream);
-            m_stream = nullptr;
+            ec.assign(EIO, boost::system::generic_category());
+            close_impl(ignore_ec);
+        }
 
-            if (m_fsevents_queue)
+        void close_impl(boost::system::error_code& /*ec*/)
+        {
+            if (m_stream != nullptr)
+            {
+                FSEventStreamStop(m_stream);
+                FSEventStreamInvalidate(m_stream);
+                FSEventStreamRelease(m_stream);
+                m_stream = nullptr;
+            }
+
+            if (m_fsevents_queue != nullptr)
             {
                 dispatch_release(m_fsevents_queue);
                 m_fsevents_queue = nullptr;
             }
         }
 
-        void close()
+        // 等待动作本身不会阻塞在内核上，没有需要取消的等待。
+        void cancel_impl(boost::system::error_code& ec)
         {
-            boost::system::error_code ec;
-            close(ec);
-            throw_error(ec);
+            ec.clear();
+        }
+
+        bool is_open_impl() const noexcept
+        {
+            return m_stream != nullptr;
         }
 
         template <typename Handler>
-        BOOST_ASIO_INITFN_AUTO_RESULT_TYPE(Handler,
-            void(boost::system::error_code, notify_events))
-            async_wait(Handler&& handler)
+        void async_wait_impl(Handler&& handler)
         {
-            return net::async_initiate<Handler,
-                void(boost::system::error_code, notify_events)>
-                ([this](auto&& handler) mutable
-                    {
-                        using HandlerType =
-                            std::decay_t<decltype(handler)>;
+            notify_events events;
 
-                        start_op(std::forward<HandlerType>(handler));
-                    }, handler);
-        }
-
-    private:
-        bool is_excluded(const fs::path& path) const
-        {
-            return detail::is_excluded(m_excluded_dirs, path);
-        }
-
-        template <typename Handler>
-        void start_op(Handler&& handler)
-        {
-            notify_events es;
-
-            // 安全获取锁并交换事件队列，避免 try_lock 丢失事件。
             {
                 std::lock_guard<std::mutex> lock(m_event_mtx);
-                es.swap(m_events);
-                // m_events 已为空，es 持有原事件列表。
+                events.swap(m_events);
             }
 
-            // 使用 post 避免直接调用 handler 造成递归调用而爆栈。
-            net::post(m_executor,
-                [handler = std::move(handler), es = std::move(es)]() mutable
-                {
-                    boost::system::error_code ec;
-                    handler(ec, es);
-                });
+            // 投递给处理函数的关联执行器，避免在发起线程上直接回调。
+            this->post_completion(std::forward<Handler>(handler),
+                boost::system::error_code{}, std::move(events));
         }
 
         static void fsevents_callback(ConstFSEventStreamRef streamRef,
@@ -283,18 +270,7 @@ namespace watchman {
 
                 notify_event event;
                 event.path_ = std::move(path_str);
-
-                if (eventFlags[i] & kFSEventStreamEventFlagItemCreated) {
-                    event.type_ = event_type::creation;
-                } else if (eventFlags[i] & kFSEventStreamEventFlagItemRemoved) {
-                    event.type_ = event_type::deletion;
-                } else if (eventFlags[i] & kFSEventStreamEventFlagItemRenamed) {
-                    event.type_ = event_type::rename;
-                } else if (eventFlags[i] & kFSEventStreamEventFlagItemModified) {
-                    event.type_ = event_type::modification;
-                } else {
-                    event.type_ = event_type::unknown;
-                }
+                event.type_ = event_type_from_flags(eventFlags[i]);
 
                 batch.push_back(std::move(event));
             }
@@ -320,17 +296,25 @@ namespace watchman {
                 std::make_move_iterator(batch.end()));
         }
 
-        inline void throw_error(const boost::system::error_code& err,
-            boost::source_location const& loc = BOOST_CURRENT_LOCATION)
+        static event_type event_type_from_flags(
+            FSEventStreamEventFlags flags) noexcept
         {
-            if (err)
-                boost::throw_exception(boost::system::system_error{ err }, loc);
+            if (flags & kFSEventStreamEventFlagItemCreated)
+                return event_type::creation;
+
+            if (flags & kFSEventStreamEventFlagItemRemoved)
+                return event_type::deletion;
+
+            if (flags & kFSEventStreamEventFlagItemRenamed)
+                return event_type::rename;
+
+            if (flags & kFSEventStreamEventFlagItemModified)
+                return event_type::modification;
+
+            return event_type::unknown;
         }
 
     private:
-        Executor m_executor;
-        fs::path m_watch_dir;
-        std::vector<fs::path> m_excluded_dirs;
         FSEventStreamContext m_stream_ctx{};
         FSEventStreamRef m_stream = nullptr;
         dispatch_queue_t m_fsevents_queue = nullptr;
@@ -339,4 +323,4 @@ namespace watchman {
     };
 
     using macos_watch = macos_watch_service<>;
-}
+} // namespace watchman

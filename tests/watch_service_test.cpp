@@ -21,9 +21,12 @@
 #include <vector>
 
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/bind_executor.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/use_future.hpp>
 
 #include <watchman/watchman.hpp>
 
@@ -54,6 +57,36 @@ namespace {
 		return false;
 	}
 
+	// 轮询等待条件成立（用于等待未来某个操作完成）。
+	bool wait_until(const std::function<bool()>& pred,
+		std::chrono::milliseconds timeout = 10s)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (pred())
+				return true;
+
+			std::this_thread::sleep_for(10ms);
+		}
+
+		return pred();
+	}
+
+	size_t ready_count(const std::vector<std::future<notify_events>>& futures)
+	{
+		size_t count = 0;
+
+		for (const auto& future : futures)
+		{
+			if (future.wait_for(0s) == std::future_status::ready)
+				++count;
+		}
+
+		return count;
+	}
+
 	bool has_path(const notify_events& events, const fs::path& path)
 	{
 		for (const auto& event : events)
@@ -61,6 +94,44 @@ namespace {
 			if (event.path_ == path)
 				return true;
 		}
+		return false;
+	}
+
+	bool has_rename(const notify_events& events, const fs::path& path,
+		const fs::path& new_path)
+	{
+		for (const auto& event : events)
+		{
+			if (event.type_ != watchman::event_type::rename)
+				continue;
+
+			if (event.path_ == path && event.new_path_ == new_path)
+				return true;
+		}
+		return false;
+	}
+
+	// 重命名的两侧可能落在不同批数据里（内核分别返回移出与移入事件），
+	// 这时会看到先后两个只带单侧路径的重命名事件。
+	bool has_rename_between(const notify_events& events, const fs::path& from,
+		const fs::path& to)
+	{
+		bool seen_from = false;
+
+		for (const auto& event : events)
+		{
+			if (event.type_ != watchman::event_type::rename)
+				continue;
+
+			if (event.path_ == from && event.new_path_ == to)
+				return true;
+
+			if (event.path_ == from)
+				seen_from = true;
+			else if (seen_from && event.path_ == to)
+				return true;
+		}
+
 		return false;
 	}
 
@@ -249,6 +320,97 @@ namespace {
 		WATCHMAN_CHECK(bed.collector().wait_for_no_event(skip));
 	}
 
+	void test_rename()
+	{
+		watch_bed bed;
+		bed.start();
+
+		const fs::path from = bed.dir() / "from.txt";
+		const fs::path to = bed.dir() / "to.txt";
+
+		write_file(from, "data");
+		WATCHMAN_CHECK(bed.collector().wait_for_event(from,
+			watchman::event_type::creation));
+
+		// 目录内重命名：同时给出新旧路径。
+		fs::rename(from, to);
+		WATCHMAN_CHECK(bed.collector().wait_for(
+			[&](const notify_events& all)
+			{
+				return has_rename_between(all, from, to);
+			}));
+
+		// 移出监视目录：只保留原路径。
+		watchman::test::temp_dir outside;
+		const fs::path moved_out = outside.path() / "moved.txt";
+
+		fs::rename(to, moved_out);
+		WATCHMAN_CHECK(bed.collector().wait_for(
+			[&](const notify_events& all) { return has_rename(all, to, {}); }));
+
+		// 移入监视目录：只保留新路径。
+		const fs::path moved_in = bed.dir() / "back.txt";
+
+		fs::rename(moved_out, moved_in);
+		WATCHMAN_CHECK(bed.collector().wait_for(
+			[&](const notify_events& all) { return has_rename(all, moved_in, {}); }));
+	}
+
+	// 允许同时发起多个等待，每个等待自带状态。
+	void test_concurrent_waits()
+	{
+		watchman::test::temp_dir temp;
+		net::io_context io;
+		watchman::watcher watch(io.get_executor(), temp.path());
+
+		std::vector<std::future<notify_events>> futures;
+
+		for (auto i = 0; i < 2; ++i)
+			futures.push_back(watch.async_wait(net::use_future));
+
+		std::thread thread([&] { io.run(); });
+
+		// 每个等待独立消费一个事件批次。
+		write_file(temp.path() / "a.txt", "a");
+		WATCHMAN_CHECK(wait_until([&] { return ready_count(futures) >= 1; }));
+
+		write_file(temp.path() / "b.txt", "b");
+		WATCHMAN_CHECK(wait_until([&] { return ready_count(futures) == 2; }));
+
+		io.stop();
+		thread.join();
+	}
+
+	// 处理函数在它自己的关联执行器（这里是一个 strand）上被调用。
+	void test_associated_executor()
+	{
+		watchman::test::temp_dir temp;
+		net::io_context io;
+		auto strand = net::make_strand(io);
+		watchman::watcher watch(io.get_executor(), temp.path());
+
+		std::promise<bool> promise;
+		auto future = promise.get_future();
+
+		watch.async_wait(net::bind_executor(strand,
+			[&](boost::system::error_code ec, notify_events)
+			{
+				promise.set_value(!ec && strand.running_in_this_thread());
+			}));
+
+		std::thread thread([&] { io.run(); });
+
+		write_file(temp.path() / "a.txt", "a");
+
+		const bool called_on_strand = future.wait_for(10s) == std::future_status::ready
+			&& future.get();
+
+		io.stop();
+		thread.join();
+
+		WATCHMAN_CHECK(called_on_strand);
+	}
+
 	void test_cancel_wait()
 	{
 		watchman::test::temp_dir temp;
@@ -285,6 +447,9 @@ int main()
 	test_create_modify_delete();
 	test_sub_directory();
 	test_excluded_dirs();
+	test_rename();
+	test_concurrent_waits();
+	test_associated_executor();
 	test_cancel_wait();
 
 	return watchman::test::summary("watch_service");
