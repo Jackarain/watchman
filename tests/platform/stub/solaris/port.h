@@ -20,7 +20,8 @@ typedef struct file_obj
 	timestruc_t fo_atime;
 	timestruc_t fo_mtime;
 	timestruc_t fo_ctime;
-	uintptr_t fo_name;
+	uintptr_t fo_pad[3];
+	char* fo_name;
 } file_obj_t;
 
 typedef struct port_event

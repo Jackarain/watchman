@@ -76,8 +76,7 @@ namespace watchman {
 			explicit port_file(const fs::path& path)
 				: path_(path.string())
 			{
-				object_.fo_name = reinterpret_cast<decltype(object_.fo_name)>(
-					path_.c_str());
+				object_.fo_name = const_cast<char*>(path_.c_str());
 
 				struct stat info{};
 
