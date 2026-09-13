@@ -32,6 +32,8 @@
 #include <thread>
 #include <vector>
 
+#include <cstdio>
+
 namespace {
 
 	namespace net = boost::asio;
@@ -112,11 +114,12 @@ namespace {
 	}
 
 	// 重命名的两侧可能落在不同批数据里（内核分别返回移出与移入事件），
-	// 这时会看到先后两个只带单侧路径的重命名事件。
+	// 这时会看到两个只带单侧路径的重命名事件。
 	bool has_rename_between(const notify_events& events, const fs::path& from,
 		const fs::path& to)
 	{
 		bool seen_from = false;
+		bool seen_to = false;
 
 		for (const auto& event : events)
 		{
@@ -126,13 +129,12 @@ namespace {
 			if (event.path_ == from && event.new_path_ == to)
 				return true;
 
-			if (event.path_ == from)
-				seen_from = true;
-			else if (seen_from && event.path_ == to)
-				return true;
+			// 平台可能把两侧拆成两个单侧事件，且不保证先后次序。
+			seen_from = seen_from || event.path_ == from;
+			seen_to = seen_to || event.path_ == to;
 		}
 
-		return false;
+		return seen_from && seen_to;
 	}
 
 	// kqueue 与 event ports 只能看到节点变化，重命名在它们那里表现为
@@ -177,10 +179,18 @@ namespace {
 		}
 
 		bool wait_for(const std::function<bool(const notify_events&)>& pred,
-			std::chrono::milliseconds timeout = 10s)
+			std::chrono::milliseconds timeout = 10s,
+			bool dump_on_timeout = true)
 		{
 			std::unique_lock<std::mutex> lock(m_mtx);
-			return m_cv.wait_for(lock, timeout, [&] { return pred(m_events); });
+
+			if (m_cv.wait_for(lock, timeout, [&] { return pred(m_events); }))
+				return true;
+
+			if (dump_on_timeout)
+				dump();
+
+			return false;
 		}
 
 		bool wait_for_event(const fs::path& path, watchman::event_type type)
@@ -198,9 +208,22 @@ namespace {
 			const bool found = wait_for([&](const notify_events& all)
 				{
 					return has_path(all, path);
-				}, quiet);
+				}, quiet, false);
 
 			return !found;
+		}
+
+		// 等待超时时把收到的事件打印出来，便于定位平台差异。
+		void dump() const
+		{
+			std::fprintf(stderr, "events (%zu) not matched, error: %s\n",
+				m_events.size(), m_error.message().c_str());
+
+			for (const auto& event : m_events)
+				std::fprintf(stderr, "  %s %s -> %s\n",
+					watchman::to_string(event.type_),
+					event.path_.string().c_str(),
+					event.new_path_.string().c_str());
 		}
 
 	private:
