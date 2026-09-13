@@ -277,8 +277,13 @@ namespace watchman {
 				if (!to_entry_path(reported, path))
 					continue;
 
-				m_filter.add_event(batch, to_event_info(event_flags[i]), path,
-					fs::exists(path));
+				const detail::fsevents_event info =
+					to_event_info(event_flags[i]);
+
+				// 只有重命名事件需要知道路径是否还在。
+				const bool path_exists = info.renamed && fs::exists(path);
+
+				m_filter.add_event(batch, info, path, path_exists);
 			}
 
 			m_filter.flush_renames(batch);

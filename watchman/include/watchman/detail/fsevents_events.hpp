@@ -41,12 +41,12 @@ namespace watchman {
 		class fsevents_event_filter
 		{
 		public:
-			// 换算一条事件；exists 表示路径当前是否还在。重命名先攒着，
-			// 等 flush_renames 再配对。
+			// 换算一条事件。path_exists 表示路径当前是否还在，只有重命名
+			// 事件会用到；重命名先攒着，等 flush_renames 再配对。
 			void add_event(notify_events& batch, const fsevents_event& event,
-				const fs::path& path, bool exists)
+				const fs::path& path, bool path_exists)
 			{
-				const event_type type = classify(event, path, exists);
+				const event_type type = classify(event, path, path_exists);
 
 				if (type == event_type::unknown || type == event_type::rename)
 					return;
