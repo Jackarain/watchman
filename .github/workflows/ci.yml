@@ -398,23 +398,27 @@ jobs:
               fi
               ;;
             openbsd)
-              echo "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/packages/$(uname -m)/" > /tmp/installurl
+              # installurl 只写镜像根地址，pkg_add 自己会补上
+              # <版本>/packages/<架构>。
+              echo "https://cdn.openbsd.org/pub/OpenBSD" > /tmp/installurl
               as_root cp /tmp/installurl /etc/installurl
               as_root pkg_add -I boost cmake ninja
               ;;
             netbsd)
               export PATH="/usr/pkg/bin:/usr/local/bin:$PATH"
               export PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r)/All"
-              as_root env PKG_PATH="$PKG_PATH" pkg_add boost-headers boost-libs cmake ninja
+              # pkgsrc 里的 ninja 是 IRC 客户端，构建工具叫 ninja-build。
+              as_root env PKG_PATH="$PKG_PATH" pkg_add boost-headers boost-libs cmake ninja-build
               ;;
             omnios)
-              as_root pkg set-publisher -g https://pkg.omnios.org/r151056/extra extra
+              # ooce 仓库的 publisher 名是 extra.omnios。
+              as_root pkg set-publisher -G '*' -g https://pkg.omnios.org/r151056/extra extra.omnios
               as_root pkg install -y developer/gcc14 ooce/developer/cmake ooce/developer/ninja
-              curl -sSL -o /tmp/boost.tar.gz https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz
-              tar -xzf /tmp/boost.tar.gz -C /tmp
-              cd "/tmp/boost_1_86_0"
-              ./bootstrap.sh --with-libraries=filesystem,system --prefix=/tmp/boost
-              ./b2 -j4 install
+              # ooce 的包装在 /opt/ooce 下，链接到默认路径以便直接调用。
+              for tool in cmake ctest ninja; do
+                as_root ln -sf "/opt/ooce/bin/${tool}" "/usr/bin/${tool}"
+              done
+              build_boost_from_source /opt/gcc-14/bin/gcc /opt/gcc-14/bin/g++
               ;;
           esac
 
