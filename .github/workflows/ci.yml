@@ -286,6 +286,7 @@ jobs:
           for source in \
             tests/notify_event_test.cpp \
             tests/path_exclusion_test.cpp \
+            tests/path_remap_test.cpp \
             tests/platform_test.cpp \
             tests/wait_queue_test.cpp \
             tests/watch_service_test.cpp \

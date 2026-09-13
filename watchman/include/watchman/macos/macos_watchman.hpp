@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include "watchman/detail/path_exclusion.hpp"
+#include "watchman/detail/path_remap.hpp"
 #include "watchman/detail/wait_queue.hpp"
 #include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
@@ -295,20 +295,17 @@ namespace watchman {
 		}
 
 		// 把 FSEvents 报出的真实路径换回注册时的路径形式，返回 false 表示
-		// 事件不在监视目录下。
+		// 事件不在监视目录下。FSEvents 一般上报解析过符号链接的真实路径，
+		// 这里先按建流路径换算，再兼容未解析的形式。
 		bool to_watch_path(const std::string& reported, fs::path& path) const
 		{
 			const fs::path full(reported);
-
-			if (!detail::is_under(m_stream_dir, full))
-				return false;
-
-			const fs::path rel = full.lexically_relative(m_stream_dir);
 			const fs::path& dir = this->watch_dir();
 
-			path = (rel == fs::path(".")) ? dir : dir / rel;
+			if (detail::remap_under(m_stream_dir, dir, full, path))
+				return true;
 
-			return true;
+			return detail::remap_under(dir, dir, full, path);
 		}
 
 		// 从扩展数据字典里取出事件路径；取不到时返回 false。

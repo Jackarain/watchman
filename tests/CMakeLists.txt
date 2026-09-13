@@ -44,6 +44,7 @@ endfunction()
 
 watchman_add_test(notify_event)
 watchman_add_test(path_exclusion)
+watchman_add_test(path_remap)
 watchman_add_test(platform)
 watchman_add_test(wait_queue)
 
