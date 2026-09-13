@@ -417,7 +417,8 @@ jobs:
             omnios)
               # ooce 仓库的 publisher 名是 extra.omnios。
               as_root pkg set-publisher -G '*' -g https://pkg.omnios.org/r151056/extra extra.omnios
-              as_root pkg install -y developer/gcc14 ooce/developer/cmake ooce/developer/ninja
+              # IPS 的 pkg 用 --accept 接受许可证，没有 FreeBSD 那样的 -y。
+              as_root pkg install --accept developer/gcc14 ooce/developer/cmake ooce/developer/ninja
               # ooce 的包装在 /opt/ooce 下，链接到默认路径以便直接调用。
               for tool in cmake ctest ninja; do
                 as_root ln -sf "/opt/ooce/bin/${tool}" "/usr/bin/${tool}"
