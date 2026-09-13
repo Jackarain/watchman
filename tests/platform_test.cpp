@@ -24,16 +24,17 @@
 #include <watchman/watchman.hpp>
 
 #include "test_util.hpp"
+#include "watch_service_interface.hpp"
 
 // 按操作系统分派到对应的实现。
 #if BOOST_OS_WINDOWS
 static_assert(std::is_same_v<watchman::watcher, watchman::windows_watch>);
 #elif BOOST_OS_LINUX
 static_assert(std::is_same_v<watchman::watcher, watchman::linux_watch>);
-#elif BOOST_OS_BSD
-static_assert(std::is_same_v<watchman::watcher, watchman::bsd_watch>);
 #elif BOOST_OS_MACOS
 static_assert(std::is_same_v<watchman::watcher, watchman::macos_watch>);
+#elif BOOST_OS_BSD
+static_assert(std::is_same_v<watchman::watcher, watchman::bsd_watch>);
 #elif BOOST_OS_SOLARIS
 static_assert(std::is_same_v<watchman::watcher, watchman::solaris_watch>);
 #endif
@@ -43,30 +44,7 @@ namespace {
 	namespace net = boost::asio;
 	namespace fs = boost::filesystem;
 
-	// 各平台实现必须提供同样的公开接口，避免出现平台差异。
-	template <typename Service>
-	concept watch_service_interface = requires(
-		Service service,
-		const fs::path& dir,
-		boost::system::error_code& ec,
-		std::function<void(boost::system::error_code, watchman::notify_events)> handler)
-	{
-		typename Service::executor_type;
-		{ service.get_executor() } -> std::same_as<typename Service::executor_type>;
-		service.open(dir, ec);
-		service.open(dir);
-		service.close(ec);
-		service.close();
-		service.cancel(ec);
-		service.cancel();
-		{ service.is_open() } -> std::same_as<bool>;
-		{ service.watch_dir() } -> std::same_as<const fs::path&>;
-		{ service.excluded_dirs() } -> std::same_as<const std::vector<fs::path>&>;
-		{ service.is_excluded(dir) } -> std::same_as<bool>;
-		service.async_wait(handler);
-	};
-
-	static_assert(watch_service_interface<watchman::watcher>);
+	static_assert(watchman::test::watch_service_interface<watchman::watcher>);
 
 	// 取消语义在各平台上保持一致。
 	static_assert(watchman::watcher::supported_cancellation ==

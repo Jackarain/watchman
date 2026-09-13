@@ -28,6 +28,11 @@ namespace watchman {
 namespace watchman {
 	using watcher = watchman::macos_watch;
 }
+#elif BOOST_OS_BSD
+# include "watchman/bsd/bsd_watchman.hpp"
+namespace watchman {
+	using watcher = watchman::bsd_watch;
+}
 #else
 # error There is no implementation for the platform yet.
 #endif
