@@ -219,7 +219,13 @@ namespace watchman {
 				return;
 			}
 
-			events.push_back(make_event(notify_type(event.mask), path));
+			const event_type type = notify_type(event.mask);
+
+			// 订阅之外的掩码（例如 inotify 队列溢出）没有可上报的信息。
+			if (type == event_type::unknown)
+				return;
+
+			events.push_back(make_event(type, path));
 			update_watches(event.mask, path);
 		}
 
