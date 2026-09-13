@@ -51,7 +51,10 @@ watchman_add_test(wait_queue)
 watchman_add_platform_compile_check(bsd "BSD|DragonFly|Darwin")
 watchman_add_platform_compile_check(macos "Darwin")
 
-watchman_add_platform_compile_check(solaris "SunOS")
+# Apple 的 struct stat 没有 st_atim 字段，无法在这里检查 event ports 后端。
+if(NOT APPLE)
+    watchman_add_platform_compile_check(solaris "SunOS")
+endif()
 
 # 端到端的目录监视测试在带有监视后端的平台上运行。
 if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin|Windows|FreeBSD|OpenBSD|NetBSD|DragonFly|SunOS")
