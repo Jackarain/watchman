@@ -257,47 +257,80 @@ namespace watchman {
 
 		inline void convert_result(uint8_t* data, notify_events& result) const
 		{
-			auto item = (PFILE_NOTIFY_INFORMATION)data;
-			notify_event e;
+			const auto* item =
+				reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(data);
 
-			for (;;)
+			while (item != nullptr)
 			{
-				std::wstring_view filename{ item->FileName,
-					item->FileNameLength / 2 };
+				const auto* next = next_entry(*item);
 
-				if (item->Action == FILE_ACTION_RENAMED_OLD_NAME)
+				if (is_rename_pair(*item, next))
 				{
-					e.type_ = notify_type(item->Action);
-					e.path_ = this->watch_dir() / filename;
-
-					if (item->NextEntryOffset != 0)
-					{
-						item = (PFILE_NOTIFY_INFORMATION)(
-							(uint8_t*)item + item->NextEntryOffset);
-					}
+					append_rename(*item, *next, result);
+					item = next_entry(*next);
+					continue;
 				}
 
-				if (item->Action == FILE_ACTION_RENAMED_NEW_NAME)
-				{
-					e.new_path_ = this->watch_dir() / filename;
-				}
-				else
-				{
-					e.type_ = notify_type(item->Action);
-					e.path_ = this->watch_dir() / filename;
-				}
-
-				// 跳过被排除目录中的事件。
-				if (!this->is_excluded(e.path_))
-					result.emplace_back(e);
-
-				e = {};
-
-				if (item->NextEntryOffset == 0)
-					break;
-
-				item = (PFILE_NOTIFY_INFORMATION)((uint8_t*)item + item->NextEntryOffset);
+				append_event(*item, result);
+				item = next;
 			}
+		}
+
+		// 重命名会被拆成相邻的两条记录。
+		static bool is_rename_pair(const FILE_NOTIFY_INFORMATION& item,
+			const FILE_NOTIFY_INFORMATION* next) noexcept
+		{
+			return item.Action == FILE_ACTION_RENAMED_OLD_NAME &&
+				next != nullptr &&
+				next->Action == FILE_ACTION_RENAMED_NEW_NAME;
+		}
+
+		static const FILE_NOTIFY_INFORMATION* next_entry(
+			const FILE_NOTIFY_INFORMATION& item) noexcept
+		{
+			if (item.NextEntryOffset == 0)
+				return nullptr;
+
+			return reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
+				reinterpret_cast<const uint8_t*>(&item) + item.NextEntryOffset);
+		}
+
+		inline void append_event(const FILE_NOTIFY_INFORMATION& item,
+			notify_events& result) const
+		{
+			notify_event event;
+			event.type_ = notify_type(item.Action);
+			event.path_ = entry_path(item);
+
+			append(std::move(event), result);
+		}
+
+		inline void append_rename(const FILE_NOTIFY_INFORMATION& from,
+			const FILE_NOTIFY_INFORMATION& to, notify_events& result) const
+		{
+			notify_event event;
+			event.type_ = event_type::rename;
+			event.path_ = entry_path(from);
+			event.new_path_ = entry_path(to);
+
+			append(std::move(event), result);
+		}
+
+		// 跳过被排除目录中的事件。
+		inline void append(notify_event event, notify_events& result) const
+		{
+			if (event.path_.empty() || this->is_excluded(event.path_))
+				return;
+
+			result.push_back(std::move(event));
+		}
+
+		inline fs::path entry_path(const FILE_NOTIFY_INFORMATION& item) const
+		{
+			const std::wstring_view name{ item.FileName,
+				item.FileNameLength / sizeof(wchar_t) };
+
+			return this->watch_dir() / name;
 		}
 
 	private:
