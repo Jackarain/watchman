@@ -6,6 +6,7 @@
 # - windows-msvc：MSVC 的 x64 / x86，Debug 与 Release
 # - mingw：MSYS2 的 UCRT64 / MINGW64 / CLANG64 / CLANGARM64
 # - unix-vm：QEMU 里的 FreeBSD / OpenBSD / NetBSD / OmniOS（illumos）
+# - windows-cross：用 mingw-w64 在 Linux 上交叉检查 Windows 后端
 # - package-consumer：安装后 find_package 与直接 add_subdirectory 两种引入方式
 #
 # 各平台后端只在对应平台上编译，Linux 上的 platform 编译检查借助桩头文件覆盖
@@ -258,6 +259,47 @@ jobs:
       - name: 测试
         shell: msys2 {0}
         run: ctest --test-dir build --output-on-failure
+
+  # Windows 后端平时只在 Windows 上编译，这里用 mingw-w64 交叉编译器在 Linux
+  # 上顺带检查一遍，交叉编译只做编译不做链接，因此使用宿主机的 Boost 头文件。
+  windows-cross:
+    name: linux mingw-w64 交叉编译检查 (Windows 后端)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装交叉编译器
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            g++-mingw-w64-x86-64 \
+            libboost-filesystem-dev \
+            libboost-system-dev
+
+      - name: 交叉编译测试与示例
+        run: |
+          # 只把 Boost 头文件暴露给交叉编译器，避免宿主机的 glibc 头文件与
+          # mingw 自带的同名头文件冲突。
+          mkdir -p /tmp/boost-include
+          ln -sfn /usr/include/boost /tmp/boost-include/boost
+
+          for source in \
+            tests/notify_event_test.cpp \
+            tests/path_exclusion_test.cpp \
+            tests/platform_test.cpp \
+            tests/wait_queue_test.cpp \
+            tests/watch_service_test.cpp \
+            examples/simple_watch.cpp \
+            examples/excluded_dirs.cpp \
+            examples/cancel_watch.cpp
+          do
+            echo "compiling ${source}"
+            x86_64-w64-mingw32-g++ -std=c++20 -c -Wall -Wextra -Werror \
+              -isystem /tmp/boost-include \
+              -Iwatchman/include -Itests -Iexamples \
+              -o /dev/null "${source}"
+          done
 
   # 虚拟机启动与软件包安装都比较慢，只在推送默认分支或手动触发时运行；
   # 除 FreeBSD 外都先按实验平台处理，避免平台上的问题直接挡住合并。

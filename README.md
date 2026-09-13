@@ -86,6 +86,7 @@ $ ctest --test-dir build --output-on-failure
 - macOS：AppleClang（arm64 与 x64）与 Homebrew LLVM
 - Windows：MSVC x64 / x86，Debug 与 Release
 - MinGW：MSYS2 的 UCRT64、MINGW64、CLANG64、CLANGARM64
+- Windows 后端交叉检查：Linux 上用 mingw-w64 编译一遍测试与示例
 - 虚拟机：FreeBSD（clang 与 gcc）、OpenBSD、NetBSD、OmniOS（illumos）
 - 三方库使用方式：安装后 `find_package(watchman CONFIG)` 与直接 `add_subdirectory`
 
