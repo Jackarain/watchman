@@ -135,6 +135,30 @@ namespace {
 		return false;
 	}
 
+	// kqueue 与 event ports 只能看到节点变化，重命名在它们那里表现为
+	// 原路径的删除加上新路径的创建。
+	bool has_move(const notify_events& events, const fs::path& from,
+		const fs::path& to)
+	{
+		return has_rename_between(events, from, to)
+			|| (has_event(events, from, watchman::event_type::deletion)
+				&& has_event(events, to, watchman::event_type::creation));
+	}
+
+	// 移出监视目录：要么报告原路径的删除，要么给出只带原路径的重命名。
+	bool has_moved_out(const notify_events& events, const fs::path& path)
+	{
+		return has_rename(events, path, {})
+			|| has_event(events, path, watchman::event_type::deletion);
+	}
+
+	// 移入监视目录：要么报告新路径的创建，要么给出只带新路径的重命名。
+	bool has_moved_in(const notify_events& events, const fs::path& path)
+	{
+		return has_rename(events, path, {})
+			|| has_event(events, path, watchman::event_type::creation);
+	}
+
 	// 收集异步等待返回的事件，供测试线程按条件等待。
 	class event_collector
 	{
@@ -332,13 +356,10 @@ namespace {
 		WATCHMAN_CHECK(bed.collector().wait_for_event(from,
 			watchman::event_type::creation));
 
-		// 目录内重命名：同时给出新旧路径。
+		// 目录内重命名：给出新旧路径，或者等价的新建加删除。
 		fs::rename(from, to);
 		WATCHMAN_CHECK(bed.collector().wait_for(
-			[&](const notify_events& all)
-			{
-				return has_rename_between(all, from, to);
-			}));
+			[&](const notify_events& all) { return has_move(all, from, to); }));
 
 		// 移出监视目录：只保留原路径。
 		watchman::test::temp_dir outside;
@@ -346,14 +367,14 @@ namespace {
 
 		fs::rename(to, moved_out);
 		WATCHMAN_CHECK(bed.collector().wait_for(
-			[&](const notify_events& all) { return has_rename(all, to, {}); }));
+			[&](const notify_events& all) { return has_moved_out(all, to); }));
 
 		// 移入监视目录：只保留新路径。
 		const fs::path moved_in = bed.dir() / "back.txt";
 
 		fs::rename(moved_out, moved_in);
 		WATCHMAN_CHECK(bed.collector().wait_for(
-			[&](const notify_events& all) { return has_rename(all, moved_in, {}); }));
+			[&](const notify_events& all) { return has_moved_in(all, moved_in); }));
 	}
 
 	// 允许同时发起多个等待，每个等待自带状态。
