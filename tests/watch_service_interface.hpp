@@ -17,7 +17,9 @@
 #include <vector>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/awaitable.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -53,5 +55,14 @@ namespace watchman {
 			{ service.async_wait(handler) };
 			typename Service::template rebind<net::io_context::executor_type>::other;
 		};
+		// 等待动作支持协程 token。
+		template <typename Service>
+		net::awaitable<void> await_watch_events(Service& service)
+		{
+			const auto events =
+				co_await service.async_wait(net::use_awaitable);
+
+			(void)events;
+		}
 	} // namespace test
 } // namespace watchman

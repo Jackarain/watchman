@@ -57,6 +57,12 @@ namespace {
 		watch.cancel();
 		watch.close();
 	}
+
+	// 协程 token 同样可以作为完成令牌。
+	void await_macos_watch(macos_watch& watch)
+	{
+		static_cast<void>(watchman::test::await_watch_events(watch));
+	}
 } // namespace
 
 int main()
