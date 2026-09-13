@@ -1,4 +1,4 @@
-#
+﻿#
 # tests/CMakeLists.txt
 # ~~~~~~~~~~~~~~~~~~~~
 #
@@ -22,6 +22,7 @@ endfunction()
 watchman_add_test(notify_event)
 watchman_add_test(path_exclusion)
 watchman_add_test(platform)
+watchman_add_test(wait_queue)
 
 # 端到端的目录监视测试目前只在 Linux 上验证过。
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

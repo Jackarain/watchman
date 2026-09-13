@@ -12,315 +12,327 @@
 #pragma once
 
 #include <cstring>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/associated_cancellation_slot.hpp>
 #include <boost/asio/error.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <CoreServices/CoreServices.h>
 
+#include "watchman/detail/wait_queue.hpp"
 #include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
 
 namespace watchman {
-    namespace net = boost::asio;
-    namespace fs = boost::filesystem;
+	namespace net = boost::asio;
+	namespace fs = boost::filesystem;
 
-    // macOS 使用 FSEvents 监视目录树。
-    //
-    // FSEvents 在独立的 dispatch 队列上回调，事件先进入内部队列，等待动作
-    // 只是取走已经攒下的事件，因此取消等待没有实际动作。
-    template <typename Executor = net::any_io_executor>
-    class macos_watch_service
-        : public detail::watch_service_base<macos_watch_service<Executor>, Executor>
-    {
-    private:
-        using base_type =
-            detail::watch_service_base<macos_watch_service<Executor>, Executor>;
+	// macOS 使用 FSEvents 监视目录树。
+	//
+	// FSEvents 在自己的 dispatch 队列上推送事件，事件的先后顺序由系统的
+	// 事件编号保证；每次等待从等待队列里取一个事件批次，没有等待时到达
+	// 的事件先缓存下来。
+	template <typename Executor = net::any_io_executor>
+	class macos_watch_service
+		: public detail::watch_service_base<macos_watch_service<Executor>, Executor>
+	{
+	private:
+		using base_type =
+			detail::watch_service_base<macos_watch_service<Executor>, Executor>;
 
-        friend base_type;
+		friend base_type;
 
-        macos_watch_service(const macos_watch_service&) = delete;
-        macos_watch_service& operator=(const macos_watch_service&) = delete;
+		macos_watch_service(const macos_watch_service&) = delete;
+		macos_watch_service& operator=(const macos_watch_service&) = delete;
 
-    public:
-        template <typename Executor1>
-        struct rebind
-        {
-            using other = macos_watch_service<Executor1>;
-        };
+	public:
+		template <typename Executor1>
+		struct rebind
+		{
+			using other = macos_watch_service<Executor1>;
+		};
 
-        macos_watch_service(const Executor& ex, const fs::path& dir,
-            const std::vector<fs::path>& excluded_dirs = {})
-            : base_type(ex, excluded_dirs)
-        {
-            this->open(dir);
-        }
+		macos_watch_service(const Executor& ex, const fs::path& dir,
+			const std::vector<fs::path>& excluded_dirs = {})
+			: base_type(ex, excluded_dirs)
+			, m_queue(ex)
+		{
+			this->open(dir);
+		}
 
-        explicit macos_watch_service(const Executor& ex,
-            const std::vector<fs::path>& excluded_dirs = {})
-            : base_type(ex, excluded_dirs)
-        {}
+		explicit macos_watch_service(const Executor& ex,
+			const std::vector<fs::path>& excluded_dirs = {})
+			: base_type(ex, excluded_dirs)
+			, m_queue(ex)
+		{}
 
-        ~macos_watch_service()
-        {
-            boost::system::error_code ignore_ec;
-            this->close(ignore_ec);
-        }
+		~macos_watch_service()
+		{
+			boost::system::error_code ignore_ec;
+			this->close(ignore_ec);
+		}
 
-        // 自定义移动语义：关闭源对象的流后转移所有权，避免原始指针双重释放。
-        macos_watch_service(macos_watch_service&& other) noexcept
-            : base_type(std::move(other))
-            , m_stream(other.m_stream)
-            , m_fsevents_queue(other.m_fsevents_queue)
-            , m_events(std::move(other.m_events))
-        {
-            other.m_stream = nullptr;
-            other.m_fsevents_queue = nullptr;
-        }
+		// FSEvents 的回调持有本对象的指针，对象不可拷贝、不可移动。
+		macos_watch_service(macos_watch_service&&) = delete;
+		macos_watch_service& operator=(macos_watch_service&&) = delete;
 
-        macos_watch_service& operator=(macos_watch_service&& other) noexcept
-        {
-            if (this != &other)
-            {
-                boost::system::error_code ignore_ec;
-                this->close(ignore_ec);
+	private:
+		// ---------- watch_service_base 要求的实现 ----------
 
-                base_type::operator=(std::move(other));
+		void open_impl(const fs::path& dir, boost::system::error_code& ec)
+		{
+			boost::system::error_code ignore_ec;
+			close_impl(ignore_ec);
 
-                m_stream = other.m_stream;
-                m_fsevents_queue = other.m_fsevents_queue;
-                m_events = std::move(other.m_events);
+			m_stream = create_stream(dir, ec);
 
-                other.m_stream = nullptr;
-                other.m_fsevents_queue = nullptr;
-            }
-            return *this;
-        }
+			if (m_stream == nullptr)
+				return;
 
-    private:
-        // ---------- watch_service_base 要求的实现 ----------
+			m_fsevents_queue =
+				dispatch_queue_create("watchman_fsevents", nullptr);
 
-        void open_impl(const fs::path& dir, boost::system::error_code& ec)
-        {
-            boost::system::error_code ignore_ec;
-            close_impl(ignore_ec);
+			FSEventStreamSetDispatchQueue(m_stream, m_fsevents_queue);
 
-            CFStringRef dir_ref = CFStringCreateWithCString(
-                nullptr, dir.c_str(), kCFStringEncodingUTF8);
+			if (FSEventStreamStart(m_stream))
+				return;
 
-            if (!dir_ref)
-            {
-                ec.assign(errno, boost::system::generic_category());
-                return;
-            }
+			ec.assign(EIO, boost::system::generic_category());
+			close_impl(ignore_ec);
+		}
 
-            CFArrayRef paths =
-                CFArrayCreate(nullptr,
-                    reinterpret_cast<const void**>(&dir_ref),
-                    1,
-                    &kCFTypeArrayCallBacks);
+		void close_impl(boost::system::error_code& /*ec*/)
+		{
+			stop_stream();
 
-            CFRelease(dir_ref);
+			// 关闭之后不再有等待可以完成。
+			std::lock_guard<std::mutex> lock(m_mtx);
+			m_queue.abort_all(net::error::operation_aborted);
+			m_queue.clear();
+		}
 
-            if (!paths)
-            {
-                ec.assign(errno, boost::system::generic_category());
-                return;
-            }
+		void cancel_impl(boost::system::error_code& ec)
+		{
+			ec.clear();
 
-            auto context = &m_stream_ctx;
+			std::lock_guard<std::mutex> lock(m_mtx);
+			m_queue.abort_all(net::error::operation_aborted);
+		}
 
-            context->version = 0;
-            context->info = this;
-            context->retain = nullptr;
-            context->release = nullptr;
-            context->copyDescription = nullptr;
+		bool is_open_impl() const noexcept
+		{
+			return m_stream != nullptr;
+		}
 
-            FSEventStreamCreateFlags streamFlags =
-                kFSEventStreamCreateFlagFileEvents;
-            streamFlags |= kFSEventStreamCreateFlagNoDefer;
-            streamFlags |= kFSEventStreamCreateFlagUseExtendedData;
-            streamFlags |= kFSEventStreamCreateFlagUseCFTypes;
+		template <typename Handler>
+		void async_wait_impl(Handler&& handler)
+		{
+			const auto slot = net::get_associated_cancellation_slot(handler);
+			const auto alive = m_alive.get();
 
-            m_stream = FSEventStreamCreate(nullptr,
-                &macos_watch_service<Executor>::fsevents_callback,
-                context,
-                paths,
-                kFSEventStreamEventIdSinceNow,
-                1,
-                streamFlags);
+			std::lock_guard<std::mutex> lock(m_mtx);
 
-            CFRelease(paths);
+			const auto id = m_queue.push(std::forward<Handler>(handler));
 
-            if (!m_stream)
-            {
-                ec.assign(errno, boost::system::generic_category());
-                return;
-            }
+			// 队列里已有缓存的批次，等待已经完成，不需要再取消。
+			if (id == detail::wait_queue::invalid_id)
+				return;
 
-            m_fsevents_queue = dispatch_queue_create("fswatch_event_queue", nullptr);
-            FSEventStreamSetDispatchQueue(m_stream, m_fsevents_queue);
+			detail::assign_cancellation(slot, [this, alive, id]
+				{
+					if (!alive->load(std::memory_order_relaxed))
+						return;
 
-            if (FSEventStreamStart(m_stream))
-                return;
+					std::lock_guard<std::mutex> lock(m_mtx);
+					m_queue.abort(id, net::error::operation_aborted);
+				});
+		}
 
-            ec.assign(EIO, boost::system::generic_category());
-            close_impl(ignore_ec);
-        }
+		// ---------- FSEvents ----------
 
-        void close_impl(boost::system::error_code& /*ec*/)
-        {
-            if (m_stream != nullptr)
-            {
-                FSEventStreamStop(m_stream);
-                FSEventStreamInvalidate(m_stream);
-                FSEventStreamRelease(m_stream);
-                m_stream = nullptr;
-            }
+		FSEventStreamRef create_stream(const fs::path& dir,
+			boost::system::error_code& ec)
+		{
+			CFStringRef dir_ref = CFStringCreateWithCString(
+				nullptr, dir.c_str(), kCFStringEncodingUTF8);
 
-            if (m_fsevents_queue != nullptr)
-            {
-                dispatch_release(m_fsevents_queue);
-                m_fsevents_queue = nullptr;
-            }
-        }
+			if (dir_ref == nullptr)
+			{
+				ec.assign(errno, boost::system::generic_category());
+				return nullptr;
+			}
 
-        // 等待动作本身不会阻塞在内核上，没有需要取消的等待。
-        void cancel_impl(boost::system::error_code& ec)
-        {
-            ec.clear();
-        }
+			CFArrayRef paths = CFArrayCreate(nullptr,
+				reinterpret_cast<const void**>(&dir_ref), 1,
+				&kCFTypeArrayCallBacks);
 
-        bool is_open_impl() const noexcept
-        {
-            return m_stream != nullptr;
-        }
+			CFRelease(dir_ref);
 
-        template <typename Handler>
-        void async_wait_impl(Handler&& handler)
-        {
-            notify_events events;
+			if (paths == nullptr)
+			{
+				ec.assign(errno, boost::system::generic_category());
+				return nullptr;
+			}
 
-            {
-                std::lock_guard<std::mutex> lock(m_event_mtx);
-                events.swap(m_events);
-            }
+			m_stream_ctx.version = 0;
+			m_stream_ctx.info = this;
+			m_stream_ctx.retain = nullptr;
+			m_stream_ctx.release = nullptr;
+			m_stream_ctx.copyDescription = nullptr;
 
-            // 投递给处理函数的关联执行器，避免在发起线程上直接回调。
-            this->post_completion(std::forward<Handler>(handler),
-                boost::system::error_code{}, std::move(events));
-        }
+			const FSEventStreamCreateFlags flags =
+				kFSEventStreamCreateFlagFileEvents |
+				kFSEventStreamCreateFlagNoDefer |
+				kFSEventStreamCreateFlagUseExtendedData |
+				kFSEventStreamCreateFlagUseCFTypes;
 
-        static void fsevents_callback(ConstFSEventStreamRef streamRef,
-                                  void* clientCallBackInfo,
-                                  size_t numEvents,
-                                  void* eventPaths,
-                                  const FSEventStreamEventFlags eventFlags[],
-                                  const FSEventStreamEventId eventIds[])
-        {
-            using self_type = macos_watch_service<Executor>;
-            auto* fse_monitor = static_cast<self_type*>(clientCallBackInfo);
+			FSEventStreamRef stream = FSEventStreamCreate(nullptr,
+				&macos_watch_service<Executor>::fsevents_callback,
+				&m_stream_ctx,
+				paths,
+				kFSEventStreamEventIdSinceNow,
+				1,
+				flags);
 
-            CFArrayRef event_array = static_cast<CFArrayRef>(eventPaths);
-            std::vector<notify_event> batch;
-            batch.reserve(numEvents);
+			CFRelease(paths);
 
-            for (size_t i = 0; i < numEvents; ++i)
-            {
-                auto path_info_dict = static_cast<CFDictionaryRef>(
-                    CFArrayGetValueAtIndex(event_array, i));
+			if (stream == nullptr)
+				ec.assign(errno, boost::system::generic_category());
 
-                auto path_cfstr = static_cast<CFStringRef>(
-                    CFDictionaryGetValue(path_info_dict,
-                        kFSEventStreamEventExtendedDataPathKey));
+			return stream;
+		}
 
-                if (!path_cfstr)
-                    continue;
+		void stop_stream() noexcept
+		{
+			if (m_stream != nullptr)
+			{
+				FSEventStreamStop(m_stream);
+				FSEventStreamInvalidate(m_stream);
+				FSEventStreamRelease(m_stream);
+				m_stream = nullptr;
+			}
 
-                // 安全地将 CFString 转换为 std::string。
-                // CFStringGetCStringPtr 可能返回 NULL，使用 CFStringGetCString 替代。
-                CFIndex length = CFStringGetLength(path_cfstr);
-                CFIndex max_size = CFStringGetMaximumSizeForEncoding(
-                    length, kCFStringEncodingUTF8) + 1;
+			if (m_fsevents_queue != nullptr)
+			{
+				dispatch_release(m_fsevents_queue);
+				m_fsevents_queue = nullptr;
+			}
+		}
 
-                std::string path_str;
-                path_str.resize(static_cast<std::string::size_type>(max_size));
+		static void fsevents_callback(ConstFSEventStreamRef /*stream*/,
+			void* client_info,
+			size_t num_events,
+			void* event_paths,
+			const FSEventStreamEventFlags event_flags[],
+			const FSEventStreamEventId /*event_ids*/[])
+		{
+			auto* self = static_cast<macos_watch_service<Executor>*>(client_info);
 
-                if (!CFStringGetCString(path_cfstr, &path_str[0],
-                        max_size, kCFStringEncodingUTF8))
-                {
-                    continue;
-                }
+			notify_events batch =
+				convert_events(event_paths, event_flags, num_events, *self);
 
-                // 按实际长度调整（不含空终止符）。
-                path_str.resize(std::strlen(path_str.c_str()));
+			if (batch.empty())
+				return;
 
-                // 跳过被排除目录中的事件。
-                if (fse_monitor->is_excluded(path_str))
-                    continue;
+			std::lock_guard<std::mutex> lock(self->m_mtx);
+			self->m_queue.deliver(std::move(batch));
+		}
 
-                notify_event event;
-                event.path_ = std::move(path_str);
-                event.type_ = event_type_from_flags(eventFlags[i]);
+		static notify_events convert_events(void* event_paths,
+			const FSEventStreamEventFlags event_flags[], size_t num_events,
+			const macos_watch_service<Executor>& self)
+		{
+			notify_events batch;
+			CFArrayRef event_array = static_cast<CFArrayRef>(event_paths);
 
-                batch.push_back(std::move(event));
-            }
+			for (size_t i = 0; i < num_events; ++i)
+			{
+				std::string path;
 
-            if (batch.empty())
-                return;
+				if (!extract_path(event_array, i, path))
+					continue;
 
-            std::lock_guard<std::mutex> lock(fse_monitor->m_event_mtx);
+				if (self.is_excluded(path))
+					continue;
 
-            // 限制事件队列大小，防止无限增长。
-            constexpr std::size_t max_events = 100000;
-            if (fse_monitor->m_events.size() > max_events)
-            {
-                fse_monitor->m_events.erase(
-                    fse_monitor->m_events.begin(),
-                    fse_monitor->m_events.begin() +
-                        (fse_monitor->m_events.size() - max_events));
-            }
+				notify_event event;
+				event.path_ = std::move(path);
+				event.type_ = type_from_flags(event_flags[i]);
 
-            fse_monitor->m_events.insert(
-                fse_monitor->m_events.end(),
-                std::make_move_iterator(batch.begin()),
-                std::make_move_iterator(batch.end()));
-        }
+				batch.push_back(std::move(event));
+			}
 
-        static event_type event_type_from_flags(
-            FSEventStreamEventFlags flags) noexcept
-        {
-            if (flags & kFSEventStreamEventFlagItemCreated)
-                return event_type::creation;
+			return batch;
+		}
 
-            if (flags & kFSEventStreamEventFlagItemRemoved)
-                return event_type::deletion;
+		// 从扩展数据字典里取出事件路径；取不到时返回 false。
+		static bool extract_path(CFArrayRef event_array, size_t index,
+			std::string& path)
+		{
+			auto* dict = static_cast<CFDictionaryRef>(
+				CFArrayGetValueAtIndex(event_array,
+					static_cast<CFIndex>(index)));
 
-            if (flags & kFSEventStreamEventFlagItemRenamed)
-                return event_type::rename;
+			auto* cf_path = static_cast<CFStringRef>(CFDictionaryGetValue(
+				dict, kFSEventStreamEventExtendedDataPathKey));
 
-            if (flags & kFSEventStreamEventFlagItemModified)
-                return event_type::modification;
+			if (cf_path == nullptr)
+				return false;
 
-            return event_type::unknown;
-        }
+			return to_string(cf_path, path);
+		}
 
-    private:
-        FSEventStreamContext m_stream_ctx{};
-        FSEventStreamRef m_stream = nullptr;
-        dispatch_queue_t m_fsevents_queue = nullptr;
-        std::mutex m_event_mtx;
-        notify_events m_events;
-    };
+		// CFStringGetCStringPtr 可能返回空指针，这里统一用 CFStringGetCString。
+		static bool to_string(CFStringRef cf_path, std::string& path)
+		{
+			const CFIndex length = CFStringGetLength(cf_path);
+			const CFIndex max_size = CFStringGetMaximumSizeForEncoding(
+				length, kCFStringEncodingUTF8) + 1;
 
-    using macos_watch = macos_watch_service<>;
+			std::string buffer;
+			buffer.resize(static_cast<std::string::size_type>(max_size));
+
+			if (!CFStringGetCString(cf_path, buffer.data(), max_size,
+					kCFStringEncodingUTF8))
+				return false;
+
+			path.assign(buffer.c_str());
+			return true;
+		}
+
+		static event_type type_from_flags(FSEventStreamEventFlags flags) noexcept
+		{
+			if (flags & kFSEventStreamEventFlagItemCreated)
+				return event_type::creation;
+
+			if (flags & kFSEventStreamEventFlagItemRemoved)
+				return event_type::deletion;
+
+			if (flags & kFSEventStreamEventFlagItemRenamed)
+				return event_type::rename;
+
+			if (flags & kFSEventStreamEventFlagItemModified)
+				return event_type::modification;
+
+			return event_type::unknown;
+		}
+
+	private:
+		FSEventStreamContext m_stream_ctx{};
+		FSEventStreamRef m_stream = nullptr;
+		dispatch_queue_t m_fsevents_queue = nullptr;
+
+		std::mutex m_mtx;
+		detail::wait_queue m_queue;
+		detail::alive_token m_alive;
+	};
+
+	using macos_watch = macos_watch_service<>;
 } // namespace watchman

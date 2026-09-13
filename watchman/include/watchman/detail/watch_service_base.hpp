@@ -32,6 +32,7 @@
 #include <boost/throw_exception.hpp>
 
 #include "watchman/detail/path_exclusion.hpp"
+#include "watchman/detail/wait_queue.hpp"
 #include "watchman/notify_event.hpp"
 
 namespace watchman {
@@ -151,8 +152,7 @@ namespace watchman {
 
 			// 本实现支持的取消类型。
 			static constexpr net::cancellation_type supported_cancellation =
-				net::cancellation_type::terminal |
-				net::cancellation_type::total;
+				detail::supported_cancellation_types;
 
 			void open(const fs::path& dir, boost::system::error_code& ec)
 			{
@@ -237,18 +237,7 @@ namespace watchman {
 			static void assign_cancellation(net::cancellation_slot slot,
 				Cancel cancel)
 			{
-				if (!slot.is_connected())
-					return;
-
-				slot.assign([cancel = std::move(cancel)](
-					net::cancellation_type type) mutable
-					{
-						if (net::cancellation_type::none ==
-							(type & supported_cancellation))
-							return;
-
-						cancel();
-					});
+				detail::assign_cancellation(slot, std::move(cancel));
 			}
 
 			// 在后台线程上完成处理函数：按 asio 约定投递到处理函数的关联
