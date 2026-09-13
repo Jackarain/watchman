@@ -20,6 +20,7 @@
 #include <boost/asio/bind_allocator.hpp>
 #include <boost/asio/cancellation_type.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -191,12 +192,15 @@ namespace watchman {
 					notify_events events) = 0;
 			};
 
+			// 等待挂起期间必须让执行器保持有工作，否则 io_context::run()
+			// 会在等待还没有完成时返回（事件由后台线程取回来）。
 			template <typename Handler>
 			class op_impl : public op
 			{
 			public:
 				op_impl(net::any_io_executor executor, Handler handler)
 					: m_executor(std::move(executor))
+					, m_work(net::make_work_guard(m_executor))
 					, m_handler(std::move(handler))
 				{}
 
@@ -217,6 +221,7 @@ namespace watchman {
 
 			private:
 				net::any_io_executor m_executor;
+				net::executor_work_guard<net::any_io_executor> m_work;
 				Handler m_handler;
 			};
 

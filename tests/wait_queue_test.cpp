@@ -19,6 +19,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -49,6 +50,23 @@ namespace {
 	std::string batch_name(const notify_events& batch)
 	{
 		return batch.empty() ? std::string{} : batch.front().path_.string();
+	}
+
+	// 轮询等待条件成立。
+	bool wait_until(const std::function<bool()>& pred,
+		std::chrono::milliseconds timeout = 5000ms)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + timeout;
+
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			if (pred())
+				return true;
+
+			std::this_thread::sleep_for(1ms);
+		}
+
+		return pred();
 	}
 
 	// 反复取出 io_context 上就绪的处理函数，直到条件成立。
@@ -140,14 +158,27 @@ namespace {
 			got.push_back(batch_name(events));
 		};
 
-		queue.push(collect);
-		queue.push(collect);
-		queue.push(collect);
+		int pending_aborted = 0;
+		const auto pending = [&pending_aborted](boost::system::error_code ec,
+			notify_events)
+		{
+			WATCHMAN_CHECK(ec == net::error::operation_aborted);
+			++pending_aborted;
+		};
 
-		io.run();
+		queue.push(collect);
+		queue.push(collect);
+		queue.push(pending);
 
-		WATCHMAN_CHECK(got.size() == 2);
+		// 缓存里只有两批，第三个等待会挂起。
+		WATCHMAN_CHECK(pump_until(io, [&got] { return got.size() == 2; }));
 		WATCHMAN_CHECK(got.size() == 2 && got[0] == "two" && got[1] == "three");
+
+		queue.abort_all(net::error::operation_aborted);
+		WATCHMAN_CHECK(pump_until(io, [&pending_aborted]
+			{
+				return pending_aborted == 1;
+			}));
 	}
 
 	// 取消槽生效时以 operation_aborted 完成，且不影响其它等待。
@@ -353,6 +384,41 @@ namespace {
 		pump.stop(net::error::operation_aborted);
 	}
 
+	// 等待挂起期间执行器必须保持有工作，否则 io_context::run() 会提前返回，
+	// 之后投递的完成动作就没有线程去执行了。
+	void test_pending_wait_keeps_context_alive()
+	{
+		fake_source source;
+		net::io_context io;
+		watchman::detail::threaded_pump pump(source, io.get_executor());
+
+		pump.start();
+
+		std::atomic<bool> ran{ false };
+		std::atomic<bool> returned{ false };
+
+		pump.async_wait([&ran](boost::system::error_code, notify_events)
+			{
+				ran = true;
+			});
+
+		std::thread thread([&]
+			{
+				io.run();
+				returned = true;
+			});
+
+		std::this_thread::sleep_for(200ms);
+		WATCHMAN_CHECK(!returned.load());
+
+		source.push(make_batch("kept"));
+		WATCHMAN_CHECK(wait_until([&ran] { return ran.load(); }));
+
+		io.stop();
+		thread.join();
+		pump.stop({});
+	}
+
 	// 关闭事件泵时未完成的等待以传入的错误码完成。
 	void test_threaded_pump_stop()
 	{
@@ -402,6 +468,7 @@ int main()
 	test_abort_all();
 	test_threaded_pump();
 	test_threaded_pump_cancel();
+	test_pending_wait_keeps_context_alive();
 	test_threaded_pump_stop();
 
 	return watchman::test::summary("wait_queue");
