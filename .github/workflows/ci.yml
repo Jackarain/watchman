@@ -197,16 +197,17 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.BOOST_PREFIX }}
-          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}
+          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}-v2
 
       # b2 的 bootstrap.bat 靠 vswhere 猜工具集，在较新的 Visual Studio 上会报
-      # Unknown toolset，这里改用官方的 CMake 发行包，并且只构建 filesystem。
+      # Unknown toolset，这里改用官方的 CMake 发行包。asio 是仅头文件的库，
+      # 但它不在 filesystem 的依赖里，需要显式列上才会一起安装。
       - name: 构建 Boost
         if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
         run: |
           curl -sSL -o boost.tar.xz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.xz"
           tar -xJf boost.tar.xz
-          cmake -S "%BOOST_DIR%" -B boost-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" -DBOOST_INCLUDE_LIBRARIES=filesystem
+          cmake -S "%BOOST_DIR%" -B boost-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
           cmake --build boost-build --target install --parallel
 
       - name: 配置
