@@ -284,6 +284,7 @@ jobs:
           ln -sfn /usr/include/boost /tmp/boost-include/boost
 
           for source in \
+            tests/fsevents_events_test.cpp \
             tests/notify_event_test.cpp \
             tests/path_exclusion_test.cpp \
             tests/path_remap_test.cpp \

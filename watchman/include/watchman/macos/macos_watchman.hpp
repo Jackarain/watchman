@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "watchman/detail/fsevents_events.hpp"
 #include "watchman/detail/path_remap.hpp"
 #include "watchman/detail/wait_queue.hpp"
 #include "watchman/detail/watch_service_base.hpp"
@@ -22,13 +23,10 @@
 #include <boost/filesystem.hpp>
 #include <boost/system/error_code.hpp>
 
-#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <CoreServices/CoreServices.h>
@@ -130,7 +128,7 @@ namespace watchman {
 			std::lock_guard<std::mutex> lock(m_mtx);
 			m_queue.abort_all(net::error::operation_aborted);
 			m_queue.clear();
-			m_known_paths.clear();
+			m_filter.clear();
 		}
 
 		void cancel_impl(boost::system::error_code& ec)
@@ -264,8 +262,6 @@ namespace watchman {
 			const FSEventStreamEventFlags event_flags[], size_t num_events)
 		{
 			notify_events batch;
-			std::vector<fs::path> rename_sources;
-			std::vector<fs::path> rename_targets;
 
 			CFArrayRef event_array = static_cast<CFArrayRef>(event_paths);
 
@@ -281,66 +277,30 @@ namespace watchman {
 				if (!to_entry_path(reported, path))
 					continue;
 
-				const event_type type = type_from_flags(event_flags[i], path);
-
-				if (type == event_type::unknown)
-					continue;
-
-				if (type == event_type::rename)
-					split_rename(path, rename_sources, rename_targets);
-				else
-					batch.push_back(make_event(type, path));
+				m_filter.add_event(batch, to_event_info(event_flags[i]), path,
+					fs::exists(path));
 			}
 
-			append_renames(batch, rename_sources, rename_targets);
+			m_filter.flush_renames(batch);
 
 			return batch;
 		}
 
-		static notify_event make_event(event_type type, const fs::path& path,
-			const fs::path& new_path = {})
+		// 把 FSEvents 的标志换算成与平台无关的事件信息。
+		static detail::fsevents_event to_event_info(
+			FSEventStreamEventFlags flags)
 		{
-			notify_event event;
-			event.type_ = type;
-			event.path_ = path;
-			event.new_path_ = new_path;
+			detail::fsevents_event event;
+
+			event.created =
+				(flags & kFSEventStreamEventFlagItemCreated) != 0;
+			event.removed =
+				(flags & kFSEventStreamEventFlagItemRemoved) != 0;
+			event.renamed =
+				(flags & kFSEventStreamEventFlagItemRenamed) != 0;
+			event.modified = (flags & modification_flags) != 0;
 
 			return event;
-		}
-
-		// 重命名事件按路径当前是否还在，分成原路径与目标路径两侧。
-		void split_rename(const fs::path& path,
-			std::vector<fs::path>& sources, std::vector<fs::path>& targets)
-		{
-			if (fs::exists(path))
-			{
-				m_known_paths.insert(path);
-				targets.push_back(path);
-			}
-			else
-			{
-				m_known_paths.erase(path);
-				sources.push_back(path);
-			}
-		}
-
-		// FSEvents 不给出重命名两侧的对应关系，同一批里成对的合成一个带
-		// new_path_ 的事件，落单的按单侧事件报告。
-		static void append_renames(notify_events& batch,
-			const std::vector<fs::path>& sources,
-			const std::vector<fs::path>& targets)
-		{
-			const std::size_t paired = std::min(sources.size(), targets.size());
-
-			for (std::size_t i = 0; i < paired; ++i)
-				batch.push_back(make_event(event_type::rename,
-					sources[i], targets[i]));
-
-			for (std::size_t i = paired; i < sources.size(); ++i)
-				batch.push_back(make_event(event_type::rename, sources[i]));
-
-			for (std::size_t i = paired; i < targets.size(); ++i)
-				batch.push_back(make_event(event_type::rename, targets[i]));
 		}
 
 		// 取监视目录的真实路径，失败时退回原路径。
@@ -406,36 +366,6 @@ namespace watchman {
 			return true;
 		}
 
-		// 事件类型。FSEvents 会把短时间内的多次变化合并上报，合并后的事件
-		// 仍可能带着创建标志，因此只在路径第一次出现时报告创建。
-		event_type type_from_flags(FSEventStreamEventFlags flags,
-			const fs::path& path)
-		{
-			if (flags & kFSEventStreamEventFlagItemRenamed)
-				return event_type::rename;
-
-			if (flags & kFSEventStreamEventFlagItemRemoved)
-			{
-				m_known_paths.erase(path);
-				return event_type::deletion;
-			}
-
-			if ((flags & kFSEventStreamEventFlagItemCreated) != 0)
-			{
-				return m_known_paths.insert(path).second
-					? event_type::creation
-					: event_type::modification;
-			}
-
-			if (flags & modification_flags)
-			{
-				m_known_paths.insert(path);
-				return event_type::modification;
-			}
-
-			return event_type::unknown;
-		}
-
 		// FSEvents 用一组标志表示内容与元数据的变化，这里统一算作修改。
 		static constexpr FSEventStreamEventFlags modification_flags =
 			kFSEventStreamEventFlagItemModified |
@@ -452,8 +382,8 @@ namespace watchman {
 		// 建流时使用的真实路径。
 		fs::path m_stream_dir;
 
-		// 已经报告过创建的条目，用来区分合并上报的创建与修改。
-		std::set<fs::path> m_known_paths;
+		// 事件类型的换算与重命名配对。
+		detail::fsevents_event_filter m_filter;
 
 		std::mutex m_mtx;
 		detail::wait_queue m_queue;

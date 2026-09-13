@@ -43,6 +43,7 @@ function(watchman_add_platform_compile_check name system_pattern)
 endfunction()
 
 watchman_add_test(notify_event)
+watchman_add_test(fsevents_events)
 watchman_add_test(path_exclusion)
 watchman_add_test(path_remap)
 watchman_add_test(platform)
