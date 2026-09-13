@@ -64,9 +64,9 @@ namespace watchman {
 
 		static constexpr int event_batch_size = 128;
 
-		static constexpr int node_events =
-			FILE_MODIFIED | FILE_ATTRIB | FILE_DELETE |
-			FILE_RENAME_TO | FILE_RENAME_FROM | FILE_NOFOLLOW;
+		// FILE_DELETE、FILE_RENAME_* 这类异常事件由内核无条件投递，不能出现在
+		// 关联掩码里，否则 port_associate 会以 EINVAL 失败。
+		static constexpr int node_events = FILE_MODIFIED | FILE_ATTRIB;
 
 		// event ports 关联的是 file_obj_t，其中保存路径字符串的地址，因此
 		// 字符串必须与关联同生命周期。
@@ -77,15 +77,21 @@ namespace watchman {
 				: path_(path.string())
 			{
 				object_.fo_name = const_cast<char*>(path_.c_str());
+				refresh();
+			}
 
+			// 内核在关联的那一刻会拿这些时间戳和文件当前状态比较，不一致就
+			// 立刻投递一次事件，因此每次重新关联前都要先刷新。
+			void refresh() noexcept
+			{
 				struct stat info{};
 
-				if (::stat(path_.c_str(), &info) == 0)
-				{
-					object_.fo_atime = info.st_atim;
-					object_.fo_mtime = info.st_mtim;
-					object_.fo_ctime = info.st_ctim;
-				}
+				if (::stat(path_.c_str(), &info) != 0)
+					return;
+
+				object_.fo_atime = info.st_atim;
+				object_.fo_mtime = info.st_mtim;
+				object_.fo_ctime = info.st_ctim;
 			}
 
 			file_obj_t& object() noexcept { return object_; }
@@ -395,6 +401,7 @@ namespace watchman {
 			boost::system::error_code ignore_ec;
 
 			// 文件可能已经被删除，下一个目录事件会把它清理掉。
+			it->second->refresh();
 			associate(*it->second, ignore_ec);
 		}
 
