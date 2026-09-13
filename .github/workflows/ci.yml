@@ -329,7 +329,8 @@ jobs:
             version: '15.1'
             experimental: false
             packages: gcc14
-            cmake_args: '-DCMAKE_C_COMPILER=gcc14 -DCMAKE_CXX_COMPILER=g++14'
+            boost_source: true
+            cmake_args: '-DCMAKE_C_COMPILER=gcc14 -DCMAKE_CXX_COMPILER=g++14 -DBoost_ROOT=/tmp/boost -DCMAKE_PREFIX_PATH=/tmp/boost'
           - name: openbsd-7.9 clang Release
             os: openbsd
             version: '7.9'
@@ -368,10 +369,33 @@ jobs:
             fi
           }
 
+          # 有些发行版的 Boost 包是用别的 C++ 标准库构建的，和当前编译器
+          # 混用会 ABI 不兼容，这种组合改为用指定编译器自行构建 Boost。
+          build_boost_from_source() {
+            mkdir -p /tmp/boost-toolchain
+            ln -sf "$1" /tmp/boost-toolchain/gcc
+            ln -sf "$2" /tmp/boost-toolchain/g++
+
+            export PATH="/tmp/boost-toolchain:$PATH"
+            export CC=gcc CXX=g++
+
+            curl -sSL -o /tmp/boost.tar.gz \
+              https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz
+            tar -xzf /tmp/boost.tar.gz -C /tmp
+            cd /tmp/boost_1_86_0
+            ./bootstrap.sh --with-libraries=filesystem --prefix=/tmp/boost
+            ./b2 -j4 install
+          }
+
           case "${{ matrix.os }}" in
             freebsd)
               as_root env ASSUME_ALWAYS_YES=yes pkg bootstrap -f
-              as_root pkg install -y boost-libs cmake ninja ${{ matrix.packages }}
+              if [ "${{ matrix.boost_source }}" = "true" ]; then
+                as_root pkg install -y cmake ninja ${{ matrix.packages }}
+                build_boost_from_source /usr/local/bin/gcc14 /usr/local/bin/g++14
+              else
+                as_root pkg install -y boost-libs cmake ninja ${{ matrix.packages }}
+              fi
               ;;
             openbsd)
               echo "https://cdn.openbsd.org/pub/OpenBSD/$(uname -r)/packages/$(uname -m)/" > /tmp/installurl
