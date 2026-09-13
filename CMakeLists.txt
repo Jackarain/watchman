@@ -57,6 +57,11 @@ if(APPLE)
     target_link_libraries(watchman INTERFACE "-framework CoreServices")
 endif()
 
+if(WIN32)
+    # asio 只在 MSVC 下通过 pragma 自动链接 Winsock，MinGW 需要显式指定。
+    target_link_libraries(watchman INTERFACE ws2_32 mswsock)
+endif()
+
 if(WATCHMAN_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
