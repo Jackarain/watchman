@@ -33,6 +33,11 @@ namespace watchman {
 namespace watchman {
 	using watcher = watchman::bsd_watch;
 }
+#elif BOOST_OS_SOLARIS
+# include "watchman/solaris/solaris_watchman.hpp"
+namespace watchman {
+	using watcher = watchman::solaris_watch;
+}
 #else
 # error There is no implementation for the platform yet.
 #endif
