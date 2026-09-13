@@ -47,6 +47,7 @@ watchman_add_test(platform)
 watchman_add_test(wait_queue)
 
 watchman_add_platform_compile_check(bsd "BSD|DragonFly")
+watchman_add_platform_compile_check(macos "Darwin")
 watchman_add_platform_compile_check(solaris "SunOS")
 
 # 端到端的目录监视测试目前只在 Linux 上验证过。

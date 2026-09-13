@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <cerrno>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -25,6 +27,7 @@
 #include <boost/system/error_code.hpp>
 
 #include <CoreServices/CoreServices.h>
+#include <dispatch/dispatch.h>
 
 #include "watchman/detail/wait_queue.hpp"
 #include "watchman/detail/watch_service_base.hpp"
