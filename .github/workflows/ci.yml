@@ -204,12 +204,15 @@ jobs:
       # 但它不在 filesystem 的依赖里，需要显式列上才会一起安装。
       #
       # Release 与 Debug 的静态库分别使用各自的运行库，只装其中一种会让另一种
-      # 构建类型在链接时报 LNK2038，因此两种变体都装上。
+      # 构建类型在链接时报 LNK2038，因此两种变体都装上。这里用 gz 而不是 xz，
+      # 下载大一点但解压快得多；下载卡住时由 curl 的重试和限速参数兜住。
       - name: 构建 Boost
         if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 25
         run: |
-          curl -sSL -o boost.tar.xz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.xz"
-          tar -xJf boost.tar.xz
+          echo 下载并解压 Boost 源码
+          curl -sSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --speed-limit 10240 --speed-time 60 -o boost.tar.gz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.gz"
+          tar -xzf boost.tar.gz
           cmake -S "%BOOST_DIR%" -B boost-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
           cmake --build boost-build-release --target install --parallel
           cmake -S "%BOOST_DIR%" -B boost-build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
