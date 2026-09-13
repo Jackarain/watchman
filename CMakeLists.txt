@@ -34,8 +34,9 @@ if(POLICY CMP0167)
 endif()
 
 # 等待动作依赖 asio 的关联取消槽，Linux 后端还依赖 posix 描述符的按操作
-# 取消，因此要求 Boost 1.78 及以上。
-find_package(Boost 1.78 REQUIRED CONFIG COMPONENTS filesystem system)
+# 取消，因此要求 Boost 1.78 及以上。Boost.System 自 1.69 起为仅头文件，
+# 新版本已不再提供 system 组件，这里只查找 filesystem。
+find_package(Boost 1.78 REQUIRED CONFIG COMPONENTS filesystem)
 find_package(Threads REQUIRED)
 
 add_library(watchman INTERFACE)
@@ -49,7 +50,6 @@ target_include_directories(watchman INTERFACE
 target_link_libraries(watchman
     INTERFACE
         Boost::filesystem
-        Boost::system
         Threads::Threads)
 
 if(APPLE)
