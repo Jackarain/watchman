@@ -109,13 +109,17 @@ target_link_libraries(app PRIVATE watchman::watchman)
 **平台实现说明**
 - Windows：重叠 I/O + `CancelIoEx`，每个等待自带读缓冲区
 - Linux：`inotify` 直接接到 asio 的描述符操作上，等待即读事件，支持按操作取消
-- macOS：FSEvents 在自己的队列上推送事件，等待动作从内部等待队列取一个批次
+- macOS：FSEvents 在自己的队列上推送事件，等待动作从内部等待队列取一个批次；
+  它只上报解析过符号链接的真实路径，事件路径会换回注册时的形式，短时间内的
+  多次变化会被合并上报，事件类型结合路径是否已经出现过判断
 - BSD：kqueue 只报告“被监视的节点发生了变化”，目录事件由两次目录扫描的差异还原
 - Solaris：每个文件与目录通过 `port_associate` 关联到 port 上，事件一次性，处理完重新关联
 - BSD 与 Solaris 后端由后台线程取内核事件，再通过 `post` 完成等待动作，因此不阻塞执行器
 
 **测试**
-- `tests/notify_event_test.cpp`、`tests/path_exclusion_test.cpp`：事件类型与路径排除规则
+- `tests/notify_event_test.cpp`：事件类型与批次
+- `tests/path_exclusion_test.cpp`、`tests/path_remap_test.cpp`：路径排除与路径换算规则
+- `tests/fsevents_events_test.cpp`：FSEvents 的事件类型换算与重命名配对
 - `tests/wait_queue_test.cpp`：等待队列与后台事件泵（顺序、缓存、取消、关闭）
 - `tests/platform_test.cpp`：各平台实现的接口一致性（concept）与具体执行器绑定
 - `tests/watch_service_test.cpp`：目录监视的端到端用例，在带监视后端的平台上运行
