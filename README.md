@@ -66,6 +66,10 @@ int main()
   `boost::asio::error::operation_aborted` 完成
 - 关闭时未完成的等待同样以 `operation_aborted` 完成
 
+**依赖**
+- C++20 编译器
+- Boost 1.78 及以上（需要 asio 的关联取消槽与 posix 描述符的按操作取消）
+
 **构建与测试**
 ```console
 $ cmake -S . -B build -G Ninja

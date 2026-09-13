@@ -33,7 +33,9 @@ if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
-find_package(Boost 1.70 REQUIRED CONFIG COMPONENTS filesystem system)
+# 等待动作依赖 asio 的关联取消槽，Linux 后端还依赖 posix 描述符的按操作
+# 取消，因此要求 Boost 1.78 及以上。
+find_package(Boost 1.78 REQUIRED CONFIG COMPONENTS filesystem system)
 find_package(Threads REQUIRED)
 
 add_library(watchman INTERFACE)
