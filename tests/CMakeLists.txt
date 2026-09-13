@@ -47,13 +47,17 @@ watchman_add_test(path_exclusion)
 watchman_add_test(platform)
 watchman_add_test(wait_queue)
 
-# kqueue 后端的头文件在 BSD 与 macOS 上都有，不需要桩接口。
-watchman_add_platform_compile_check(bsd "BSD|DragonFly|Darwin")
-watchman_add_platform_compile_check(macos "Darwin")
+# 桩接口只补系统头文件，不补 Windows 上缺失的 POSIX 接口，所以这些检查只在
+# 类 Unix 宿主上运行。
+if(NOT WIN32)
+    # kqueue 后端的头文件在 BSD 与 macOS 上都有，不需要桩接口。
+    watchman_add_platform_compile_check(bsd "BSD|DragonFly|Darwin")
+    watchman_add_platform_compile_check(macos "Darwin")
 
-# Apple 的 struct stat 没有 st_atim 字段，无法在这里检查 event ports 后端。
-if(NOT APPLE)
-    watchman_add_platform_compile_check(solaris "SunOS")
+    # Apple 的 struct stat 没有 st_atim 字段，无法在这里检查 event ports 后端。
+    if(NOT APPLE)
+        watchman_add_platform_compile_check(solaris "SunOS")
+    endif()
 endif()
 
 # 端到端的目录监视测试在带有监视后端的平台上运行。
