@@ -16,10 +16,11 @@
 #include <boost/filesystem.hpp>
 
 #include <algorithm>
-#include <cstddef>
 #include <set>
 #include <utility>
 #include <vector>
+
+#include <cstddef>
 
 namespace watchman {
 	namespace detail {
