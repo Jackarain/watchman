@@ -50,7 +50,7 @@ watchman_add_platform_compile_check(bsd "BSD|DragonFly")
 watchman_add_platform_compile_check(macos "Darwin")
 watchman_add_platform_compile_check(solaris "SunOS")
 
-# 端到端的目录监视测试目前只在 Linux 上验证过。
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+# 端到端的目录监视测试在带有监视后端的平台上运行。
+if(CMAKE_SYSTEM_NAME MATCHES "Linux|Darwin|Windows|FreeBSD|OpenBSD|NetBSD|DragonFly|SunOS")
     watchman_add_test(watch_service)
 endif()
