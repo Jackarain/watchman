@@ -55,6 +55,7 @@ namespace watchman {
 			{ service.async_wait(handler) };
 			typename Service::template rebind<net::io_context::executor_type>::other;
 		};
+#if defined(BOOST_ASIO_HAS_CO_AWAIT)
 		// 等待动作支持协程 token。
 		template <typename Service>
 		net::awaitable<void> await_watch_events(Service& service)
@@ -64,5 +65,10 @@ namespace watchman {
 
 			(void)events;
 		}
+#else
+		// 部分 Boost 版本在 clang 上不启用协程，此时没有可检查的协程令牌。
+		template <typename Service>
+		void await_watch_events(Service&) {}
+#endif
 	} // namespace test
 } // namespace watchman
