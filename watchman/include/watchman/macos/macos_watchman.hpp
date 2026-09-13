@@ -26,6 +26,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -48,6 +49,9 @@ namespace watchman {
 	//
 	// FSEvents 不跟随符号链接，上报的也是解析过符号链接的真实路径，因此
 	// 建流时用真实路径，事件路径再换回注册时的路径形式。
+	//
+	// FSEvents 会把短时间内同一路径上的多次变化合并上报，合并后的事件仍然
+	// 带着创建标志，因此只在路径第一次出现时报告创建。
 	template <typename Executor = net::any_io_executor>
 	class macos_watch_service
 		: public detail::watch_service_base<macos_watch_service<Executor>, Executor>
@@ -126,6 +130,7 @@ namespace watchman {
 			std::lock_guard<std::mutex> lock(m_mtx);
 			m_queue.abort_all(net::error::operation_aborted);
 			m_queue.clear();
+			m_known_paths.clear();
 		}
 
 		void cancel_impl(boost::system::error_code& ec)
@@ -248,19 +253,15 @@ namespace watchman {
 		{
 			auto* self = static_cast<macos_watch_service<Executor>*>(client_info);
 
-			notify_events batch =
-				convert_events(event_paths, event_flags, num_events, *self);
-
-			if (batch.empty())
-				return;
-
 			std::lock_guard<std::mutex> lock(self->m_mtx);
-			self->m_queue.deliver(std::move(batch));
+
+			self->m_queue.deliver(
+				self->convert_events(event_paths, event_flags, num_events));
 		}
 
-		static notify_events convert_events(void* event_paths,
-			const FSEventStreamEventFlags event_flags[], size_t num_events,
-			const macos_watch_service<Executor>& self)
+		// 把一批 FSEvents 回调参数转换成统一的通告事件。
+		notify_events convert_events(void* event_paths,
+			const FSEventStreamEventFlags event_flags[], size_t num_events)
 		{
 			notify_events batch;
 			std::vector<fs::path> rename_sources;
@@ -270,11 +271,6 @@ namespace watchman {
 
 			for (size_t i = 0; i < num_events; ++i)
 			{
-				const event_type type = type_from_flags(event_flags[i]);
-
-				if (type == event_type::unknown)
-					continue;
-
 				std::string reported;
 
 				if (!extract_path(event_array, i, reported))
@@ -282,7 +278,12 @@ namespace watchman {
 
 				fs::path path;
 
-				if (!self.to_entry_path(reported, path))
+				if (!to_entry_path(reported, path))
+					continue;
+
+				const event_type type = type_from_flags(event_flags[i], path);
+
+				if (type == event_type::unknown)
 					continue;
 
 				if (type == event_type::rename)
@@ -308,13 +309,19 @@ namespace watchman {
 		}
 
 		// 重命名事件按路径当前是否还在，分成原路径与目标路径两侧。
-		static void split_rename(const fs::path& path,
+		void split_rename(const fs::path& path,
 			std::vector<fs::path>& sources, std::vector<fs::path>& targets)
 		{
 			if (fs::exists(path))
+			{
+				m_known_paths.insert(path);
 				targets.push_back(path);
+			}
 			else
+			{
+				m_known_paths.erase(path);
 				sources.push_back(path);
+			}
 		}
 
 		// FSEvents 不给出重命名两侧的对应关系，同一批里成对的合成一个带
@@ -399,19 +406,32 @@ namespace watchman {
 			return true;
 		}
 
-		static event_type type_from_flags(FSEventStreamEventFlags flags) noexcept
+		// 事件类型。FSEvents 会把短时间内的多次变化合并上报，合并后的事件
+		// 仍可能带着创建标志，因此只在路径第一次出现时报告创建。
+		event_type type_from_flags(FSEventStreamEventFlags flags,
+			const fs::path& path)
 		{
 			if (flags & kFSEventStreamEventFlagItemRenamed)
 				return event_type::rename;
 
-			if (flags & kFSEventStreamEventFlagItemCreated)
-				return event_type::creation;
-
 			if (flags & kFSEventStreamEventFlagItemRemoved)
+			{
+				m_known_paths.erase(path);
 				return event_type::deletion;
+			}
+
+			if ((flags & kFSEventStreamEventFlagItemCreated) != 0)
+			{
+				return m_known_paths.insert(path).second
+					? event_type::creation
+					: event_type::modification;
+			}
 
 			if (flags & modification_flags)
+			{
+				m_known_paths.insert(path);
 				return event_type::modification;
+			}
 
 			return event_type::unknown;
 		}
@@ -431,6 +451,9 @@ namespace watchman {
 
 		// 建流时使用的真实路径。
 		fs::path m_stream_dir;
+
+		// 已经报告过创建的条目，用来区分合并上报的创建与修改。
+		std::set<fs::path> m_known_paths;
 
 		std::mutex m_mtx;
 		detail::wait_queue m_queue;
