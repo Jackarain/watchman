@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "watchman/detail/path_exclusion.hpp"
 #include "watchman/detail/wait_queue.hpp"
 #include "watchman/detail/watch_service_base.hpp"
 #include "watchman/notify_event.hpp"
@@ -42,6 +43,9 @@ namespace watchman {
 	// FSEvents 在自己的 dispatch 队列上推送事件，事件的先后顺序由系统的
 	// 事件编号保证；每次等待从等待队列里取一个事件批次，没有等待时到达
 	// 的事件先缓存下来。
+	//
+	// FSEvents 不跟随符号链接，上报的也是解析过符号链接的真实路径，因此
+	// 建流时用真实路径，事件路径再换回注册时的路径形式。
 	template <typename Executor = net::any_io_executor>
 	class macos_watch_service
 		: public detail::watch_service_base<macos_watch_service<Executor>, Executor>
@@ -94,7 +98,8 @@ namespace watchman {
 			boost::system::error_code ignore_ec;
 			close_impl(ignore_ec);
 
-			m_stream = create_stream(dir, ec);
+			m_stream_dir = resolve_dir(dir);
+			m_stream = create_stream(m_stream_dir, ec);
 
 			if (m_stream == nullptr)
 				return;
@@ -262,17 +267,48 @@ namespace watchman {
 				if (!extract_path(event_array, i, path))
 					continue;
 
-				if (self.is_excluded(path))
+				fs::path event_path;
+
+				if (!self.to_watch_path(path, event_path))
+					continue;
+
+				if (self.is_excluded(event_path))
 					continue;
 
 				notify_event event;
-				event.path_ = std::move(path);
+				event.path_ = std::move(event_path);
 				event.type_ = type_from_flags(event_flags[i]);
 
 				batch.push_back(std::move(event));
 			}
 
 			return batch;
+		}
+
+		// 取监视目录的真实路径，失败时退回原路径。
+		static fs::path resolve_dir(const fs::path& dir)
+		{
+			boost::system::error_code ec;
+			const fs::path real = fs::canonical(dir, ec);
+
+			return ec ? dir : real;
+		}
+
+		// 把 FSEvents 报出的真实路径换回注册时的路径形式，返回 false 表示
+		// 事件不在监视目录下。
+		bool to_watch_path(const std::string& reported, fs::path& path) const
+		{
+			const fs::path full(reported);
+
+			if (!detail::is_under(m_stream_dir, full))
+				return false;
+
+			const fs::path rel = full.lexically_relative(m_stream_dir);
+			const fs::path& dir = this->watch_dir();
+
+			path = (rel == fs::path(".")) ? dir : dir / rel;
+
+			return true;
 		}
 
 		// 从扩展数据字典里取出事件路径；取不到时返回 false。
@@ -331,6 +367,9 @@ namespace watchman {
 		FSEventStreamContext m_stream_ctx{};
 		FSEventStreamRef m_stream = nullptr;
 		dispatch_queue_t m_fsevents_queue = nullptr;
+
+		// 建流时使用的真实路径。
+		fs::path m_stream_dir;
 
 		std::mutex m_mtx;
 		detail::wait_queue m_queue;
