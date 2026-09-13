@@ -184,7 +184,8 @@ namespace watchman {
 
 			m_bufs_pending.append(data);
 
-			while (m_bufs_pending.size() > sizeof(inotify_event))
+			// 内核数据可能停在事件中间，剩下的留到下一次读取。
+			while (has_complete_event())
 			{
 				const inotify_event* event = current_event();
 
@@ -293,6 +294,15 @@ namespace watchman {
 		const inotify_event* current_event() const noexcept
 		{
 			return reinterpret_cast<const inotify_event*>(m_bufs_pending.data());
+		}
+
+		bool has_complete_event() const noexcept
+		{
+			if (m_bufs_pending.size() < sizeof(inotify_event))
+				return false;
+
+			return m_bufs_pending.size() >=
+				sizeof(inotify_event) + current_event()->len;
 		}
 
 		void drop_current_event()
