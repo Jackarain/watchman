@@ -19,8 +19,9 @@ function(watchman_add_test name)
     set_tests_properties(${name} PROPERTIES TIMEOUT 60)
 endfunction()
 
-# 无法在本机运行的平台后端只做编译期检查：在对应的真实平台上直接使用
-# 系统头文件，其它情况使用 tests/platform/stub 下的桩接口。
+# 无法在本机运行的平台后端只做编译期检查：在自带对应内核头文件的平台上直接
+# 使用系统头文件，其它情况使用 tests/platform/stub/<name> 下的桩接口。桩接口
+# 按平台分开存放，避免被 asio 等公共头文件包含到而互相干扰。
 function(watchman_add_platform_compile_check name system_pattern)
     add_library(watchman_compile_check_${name} OBJECT
         platform/${name}_compile_test.cpp)
@@ -37,7 +38,7 @@ function(watchman_add_platform_compile_check name system_pattern)
 
     if(NOT CMAKE_SYSTEM_NAME MATCHES "${system_pattern}")
         target_include_directories(watchman_compile_check_${name}
-            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/platform/stub)
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/platform/stub/${name})
     endif()
 endfunction()
 
@@ -46,8 +47,10 @@ watchman_add_test(path_exclusion)
 watchman_add_test(platform)
 watchman_add_test(wait_queue)
 
-watchman_add_platform_compile_check(bsd "BSD|DragonFly")
+# kqueue 后端的头文件在 BSD 与 macOS 上都有，不需要桩接口。
+watchman_add_platform_compile_check(bsd "BSD|DragonFly|Darwin")
 watchman_add_platform_compile_check(macos "Darwin")
+
 watchman_add_platform_compile_check(solaris "SunOS")
 
 # 端到端的目录监视测试在带有监视后端的平台上运行。

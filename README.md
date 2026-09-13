@@ -119,7 +119,8 @@ target_link_libraries(app PRIVATE watchman::watchman)
 - `tests/wait_queue_test.cpp`：等待队列与后台事件泵（顺序、缓存、取消、关闭）
 - `tests/platform_test.cpp`：各平台实现的接口一致性（concept）与具体执行器绑定
 - `tests/watch_service_test.cpp`：目录监视的端到端用例，在带监视后端的平台上运行
-- `tests/platform/`：BSD、macOS 与 Solaris 后端在本地缺少系统头文件时，使用桩接口做编译期检查
+- `tests/platform/`：BSD、macOS 与 Solaris 后端的编译期检查；宿主没有对应内核头文件时
+  使用 `tests/platform/stub/<平台>` 下的桩接口，kqueue 后端在 BSD 与 macOS 上直接用系统头文件
 - `examples/consumer/`：以安装后的包或源码子目录引入 watchman 的消费者检查
 
 **排除规则**
