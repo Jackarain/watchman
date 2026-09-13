@@ -385,7 +385,8 @@ jobs:
               https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.gz
             tar -xzf /tmp/boost.tar.gz -C /tmp
             cd /tmp/boost_1_86_0
-            ./bootstrap.sh --with-libraries=filesystem --prefix=/tmp/boost
+            ./bootstrap.sh --with-toolset=gcc --with-libraries=filesystem \
+              --prefix=/tmp/boost
             ./b2 -j4 install
           }
 
