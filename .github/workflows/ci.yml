@@ -184,8 +184,7 @@ jobs:
           - { name: 'windows-2025 MSVC x64 Release', runner: windows-2025, arch: x64, build_type: Release }
     env:
       BOOST_PREFIX: ${{ github.workspace }}\boost-1.86
-      BOOST_RELEASE: 1.86.0
-      BOOST_DIR: boost_1_86_0
+      BOOST_DIR: boost-1.86.0
     steps:
       - uses: actions/checkout@v7
 
@@ -199,23 +198,23 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.BOOST_PREFIX }}
-          key: boost-${{ env.BOOST_RELEASE }}-msvc-${{ matrix.arch }}
+          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}
 
+      # b2 的 bootstrap.bat 靠 vswhere 猜工具集，在较新的 Visual Studio 上会报
+      # Unknown toolset，这里改用官方的 CMake 发行包，并且只构建 filesystem。
       - name: 构建 Boost
         if: ${{ steps.boost-cache.outputs.cache-hit != 'true' }}
         run: |
-          curl -sSL -o boost.tar.gz https://archives.boost.io/release/%BOOST_RELEASE%/source/%BOOST_DIR%.tar.gz
-          tar -xzf boost.tar.gz
-          cd %BOOST_DIR%
-          call bootstrap.bat
-          b2 -j%NUMBER_OF_PROCESSORS% --with-filesystem --with-system --prefix="%BOOST_PREFIX%" install
+          curl -sSL -o boost.tar.xz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.xz"
+          tar -xJf boost.tar.xz
+          cmake -S "%BOOST_DIR%" -B boost-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" -DBOOST_INCLUDE_LIBRARIES=filesystem
+          cmake --build boost-build --target install --parallel
 
       - name: 配置
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DBoost_ROOT="%BOOST_PREFIX%"
-          -DBOOST_ROOT="%BOOST_PREFIX%"
           -DBoost_USE_STATIC_LIBS=ON
           -DCMAKE_PREFIX_PATH="%BOOST_PREFIX%"
 
