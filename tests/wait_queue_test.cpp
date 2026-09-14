@@ -9,8 +9,10 @@
 //
 //
 
-#include "test_util.hpp"
+#define BOOST_TEST_MODULE wait_queue
 
+// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
+// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/detail/threaded_pump.hpp>
 #include <watchman/detail/wait_queue.hpp>
 
@@ -18,6 +20,8 @@
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/system/error_code.hpp>
+
+#include <boost/test/included/unit_test.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -90,7 +94,7 @@ namespace {
 	}
 
 	// 每个等待按先后顺序取走一个事件批次。
-	void test_deliver_order()
+	BOOST_AUTO_TEST_CASE(deliver_order)
 	{
 		net::io_context io;
 		watchman::detail::wait_queue queue(io.get_executor());
@@ -99,28 +103,28 @@ namespace {
 		const auto collect = [&got](boost::system::error_code ec,
 			notify_events events)
 		{
-			WATCHMAN_CHECK(!ec);
+			BOOST_TEST(!ec);
 			got.push_back(batch_name(events));
 		};
 
 		queue.push(collect);
 		queue.push(collect);
 
-		WATCHMAN_CHECK(queue.size() == 2);
+		BOOST_TEST(queue.size() == 2);
 
 		queue.deliver(make_batch("first"));
 		queue.deliver(make_batch("second"));
 
-		WATCHMAN_CHECK(queue.empty());
+		BOOST_TEST(queue.empty());
 
 		io.run();
 
-		WATCHMAN_CHECK(got.size() == 2);
-		WATCHMAN_CHECK(got.size() == 2 && got[0] == "first" && got[1] == "second");
+		BOOST_TEST(got.size() == 2);
+		BOOST_CHECK(got.size() == 2 && got[0] == "first" && got[1] == "second");
 	}
 
 	// 没有等待时到达的批次先缓存，下一个等待直接取走。
-	void test_buffered_events()
+	BOOST_AUTO_TEST_CASE(buffered_events)
 	{
 		net::io_context io;
 		watchman::detail::wait_queue queue(io.get_executor());
@@ -131,19 +135,19 @@ namespace {
 		const auto id = queue.push([&got](boost::system::error_code ec,
 			notify_events events)
 			{
-				WATCHMAN_CHECK(!ec);
+				BOOST_TEST(!ec);
 				got = batch_name(events);
 			});
 
-		WATCHMAN_CHECK(id == watchman::detail::wait_queue::invalid_id);
-		WATCHMAN_CHECK(queue.empty());
+		BOOST_TEST(id == watchman::detail::wait_queue::invalid_id);
+		BOOST_TEST(queue.empty());
 
 		io.run();
-		WATCHMAN_CHECK(got == "cached");
+		BOOST_TEST(got == "cached");
 	}
 
 	// 缓存批次超过上限时丢弃最早的一批，避免无限增长。
-	void test_buffer_limit()
+	BOOST_AUTO_TEST_CASE(buffer_limit)
 	{
 		net::io_context io;
 		watchman::detail::wait_queue queue(io.get_executor(), 2);
@@ -162,7 +166,7 @@ namespace {
 		const auto pending = [&pending_aborted](boost::system::error_code ec,
 			notify_events)
 		{
-			WATCHMAN_CHECK(ec == net::error::operation_aborted);
+			BOOST_TEST(ec == net::error::operation_aborted);
 			++pending_aborted;
 		};
 
@@ -171,18 +175,18 @@ namespace {
 		queue.push(pending);
 
 		// 缓存里只有两批，第三个等待会挂起。
-		WATCHMAN_CHECK(pump_until(io, [&got] { return got.size() == 2; }));
-		WATCHMAN_CHECK(got.size() == 2 && got[0] == "two" && got[1] == "three");
+		BOOST_TEST(pump_until(io, [&got] { return got.size() == 2; }));
+		BOOST_CHECK(got.size() == 2 && got[0] == "two" && got[1] == "three");
 
 		queue.abort_all(net::error::operation_aborted);
-		WATCHMAN_CHECK(pump_until(io, [&pending_aborted]
+		BOOST_TEST(pump_until(io, [&pending_aborted]
 			{
 				return pending_aborted == 1;
 			}));
 	}
 
 	// 取消槽生效时以 operation_aborted 完成，且不影响其它等待。
-	void test_cancel_by_slot()
+	BOOST_AUTO_TEST_CASE(cancel_by_slot)
 	{
 		net::io_context io;
 		watchman::detail::wait_queue queue(io.get_executor());
@@ -197,7 +201,7 @@ namespace {
 				called = true;
 				result = ec;
 
-				WATCHMAN_CHECK(events.empty());
+				BOOST_TEST(events.empty());
 			}));
 
 		watchman::detail::assign_cancellation(signal.slot(), [&queue, id]
@@ -207,21 +211,21 @@ namespace {
 
 		// none 不是受支持的取消类型。
 		signal.emit(net::cancellation_type::none);
-		WATCHMAN_CHECK(!called);
-		WATCHMAN_CHECK(queue.size() == 1);
+		BOOST_TEST(!called);
+		BOOST_TEST(queue.size() == 1);
 
 		signal.emit(net::cancellation_type::terminal);
 
-		WATCHMAN_CHECK(queue.empty());
+		BOOST_TEST(queue.empty());
 
 		io.run();
 
-		WATCHMAN_CHECK(called);
-		WATCHMAN_CHECK(result == net::error::operation_aborted);
+		BOOST_TEST(called);
+		BOOST_TEST(result == net::error::operation_aborted);
 	}
 
 	// 中止全部等待。
-	void test_abort_all()
+	BOOST_AUTO_TEST_CASE(abort_all)
 	{
 		net::io_context io;
 		watchman::detail::wait_queue queue(io.get_executor());
@@ -230,8 +234,8 @@ namespace {
 		const auto collect = [&aborted](boost::system::error_code ec,
 			notify_events events)
 		{
-			WATCHMAN_CHECK(ec == net::error::operation_aborted);
-			WATCHMAN_CHECK(events.empty());
+			BOOST_TEST(ec == net::error::operation_aborted);
+			BOOST_TEST(events.empty());
 
 			++aborted;
 		};
@@ -241,10 +245,10 @@ namespace {
 
 		queue.abort_all(net::error::operation_aborted);
 
-		WATCHMAN_CHECK(queue.empty());
+		BOOST_TEST(queue.empty());
 
 		io.run();
-		WATCHMAN_CHECK(aborted == 2);
+		BOOST_TEST(aborted == 2);
 	}
 
 	// 可手动触发的事件源，用于验证后台事件泵。
@@ -300,7 +304,7 @@ namespace {
 	};
 
 	// 事件源的事件批次按先后顺序完成排队的等待。
-	void test_threaded_pump()
+	BOOST_AUTO_TEST_CASE(threaded_pump)
 	{
 		fake_source source;
 		net::io_context io;
@@ -311,29 +315,29 @@ namespace {
 		std::vector<std::string> got;
 		pump.async_wait([&got](boost::system::error_code ec, notify_events events)
 			{
-				WATCHMAN_CHECK(!ec);
+				BOOST_TEST(!ec);
 				got.push_back(batch_name(events));
 			});
 
 		source.push(make_batch("one"));
-		WATCHMAN_CHECK(pump_until(io, [&got] { return got.size() == 1; }));
+		BOOST_TEST(pump_until(io, [&got] { return got.size() == 1; }));
 
 		pump.async_wait([&got](boost::system::error_code ec, notify_events events)
 			{
-				WATCHMAN_CHECK(!ec);
+				BOOST_TEST(!ec);
 				got.push_back(batch_name(events));
 			});
 
 		source.push(make_batch("two"));
-		WATCHMAN_CHECK(pump_until(io, [&got] { return got.size() == 2; }));
+		BOOST_TEST(pump_until(io, [&got] { return got.size() == 2; }));
 
-		WATCHMAN_CHECK(got.size() == 2 && got[0] == "one" && got[1] == "two");
+		BOOST_CHECK(got.size() == 2 && got[0] == "one" && got[1] == "two");
 
 		pump.stop({});
 	}
 
 	// 事件泵支持按等待取消，也支持服务级取消。
-	void test_threaded_pump_cancel()
+	BOOST_AUTO_TEST_CASE(threaded_pump_cancel)
 	{
 		fake_source source;
 		net::io_context io;
@@ -359,14 +363,14 @@ namespace {
 			});
 
 		signal.emit(net::cancellation_type::all);
-		WATCHMAN_CHECK(pump_until(io, [&cancelled] { return cancelled; }));
-		WATCHMAN_CHECK(cancelled_result == net::error::operation_aborted);
-		WATCHMAN_CHECK(got.empty());
+		BOOST_TEST(pump_until(io, [&cancelled] { return cancelled; }));
+		BOOST_TEST(cancelled_result == net::error::operation_aborted);
+		BOOST_TEST(got.empty());
 
 		// 取消一个等待不会影响后一个等待。
 		source.push(make_batch("kept"));
-		WATCHMAN_CHECK(pump_until(io, [&got] { return !got.empty(); }));
-		WATCHMAN_CHECK(got == "kept");
+		BOOST_TEST(pump_until(io, [&got] { return !got.empty(); }));
+		BOOST_TEST(got == "kept");
 
 		boost::system::error_code aborted_result;
 		bool aborted = false;
@@ -378,15 +382,15 @@ namespace {
 			});
 
 		pump.cancel_all();
-		WATCHMAN_CHECK(pump_until(io, [&aborted] { return aborted; }));
-		WATCHMAN_CHECK(aborted_result == net::error::operation_aborted);
+		BOOST_TEST(pump_until(io, [&aborted] { return aborted; }));
+		BOOST_TEST(aborted_result == net::error::operation_aborted);
 
 		pump.stop(net::error::operation_aborted);
 	}
 
 	// 等待挂起期间执行器必须保持有工作，否则 io_context::run() 会提前返回，
 	// 之后投递的完成动作就没有线程去执行了。
-	void test_pending_wait_keeps_context_alive()
+	BOOST_AUTO_TEST_CASE(pending_wait_keeps_context_alive)
 	{
 		fake_source source;
 		net::io_context io;
@@ -409,10 +413,10 @@ namespace {
 			});
 
 		std::this_thread::sleep_for(200ms);
-		WATCHMAN_CHECK(!returned.load());
+		BOOST_TEST(!returned.load());
 
 		source.push(make_batch("kept"));
-		WATCHMAN_CHECK(wait_until([&ran] { return ran.load(); }));
+		BOOST_TEST(wait_until([&ran] { return ran.load(); }));
 
 		io.stop();
 		thread.join();
@@ -420,7 +424,7 @@ namespace {
 	}
 
 	// 关闭事件泵时未完成的等待以传入的错误码完成。
-	void test_threaded_pump_stop()
+	BOOST_AUTO_TEST_CASE(threaded_pump_stop)
 	{
 		fake_source source;
 		net::io_context io;
@@ -439,8 +443,8 @@ namespace {
 
 		pump.stop(net::error::operation_aborted);
 
-		WATCHMAN_CHECK(pump_until(io, [&called] { return called; }));
-		WATCHMAN_CHECK(result == net::error::operation_aborted);
+		BOOST_TEST(pump_until(io, [&called] { return called; }));
+		BOOST_TEST(result == net::error::operation_aborted);
 
 		// 可以重新启动。
 		pump.start();
@@ -452,24 +456,9 @@ namespace {
 			});
 
 		source.push(make_batch("restarted"));
-		WATCHMAN_CHECK(pump_until(io, [&got] { return !got.empty(); }));
-		WATCHMAN_CHECK(got == "restarted");
+		BOOST_TEST(pump_until(io, [&got] { return !got.empty(); }));
+		BOOST_TEST(got == "restarted");
 
 		pump.stop({});
 	}
 } // namespace
-
-int main()
-{
-	test_deliver_order();
-	test_buffered_events();
-	test_buffer_limit();
-	test_cancel_by_slot();
-	test_abort_all();
-	test_threaded_pump();
-	test_threaded_pump_cancel();
-	test_pending_wait_keeps_context_alive();
-	test_threaded_pump_stop();
-
-	return watchman::test::summary("wait_queue");
-}

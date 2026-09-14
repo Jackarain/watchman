@@ -9,15 +9,21 @@
 //
 //
 
+#define BOOST_TEST_MODULE platform
+
 #include "test_util.hpp"
 #include "watch_service_interface.hpp"
 
+// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
+// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/watchman.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/predef.h>
+
+#include <boost/test/included/unit_test.hpp>
 
 #include <concepts>
 #include <functional>
@@ -51,8 +57,14 @@ namespace {
 	static_assert(watchman::watcher::supported_cancellation ==
 		(net::cancellation_type::terminal | net::cancellation_type::total));
 
+	BOOST_AUTO_TEST_CASE(event_type_name)
+	{
+		BOOST_TEST(std::string(watchman::to_string(watchman::event_type::rename))
+			== "rename");
+	}
+
 	// 实现可以绑定到具体的执行器类型，而不只是 any_io_executor。
-	void test_concrete_executor()
+	BOOST_AUTO_TEST_CASE(concrete_executor)
 	{
 		using concrete_watch =
 			watchman::watcher::rebind<net::io_context::executor_type>::other;
@@ -62,19 +74,12 @@ namespace {
 
 		concrete_watch watch(io.get_executor(), temp.path());
 
-		WATCHMAN_CHECK(watch.is_open());
-		WATCHMAN_CHECK(watch.watch_dir() == temp.path());
+		BOOST_TEST(watch.is_open());
+		BOOST_TEST(watch.watch_dir() == temp.path());
+	}
+
+	BOOST_AUTO_TEST_CASE(platform_name)
+	{
+		std::printf("platform: %s\n", BOOST_PLATFORM);
 	}
 } // namespace
-
-int main()
-{
-	WATCHMAN_CHECK(std::string(watchman::to_string(watchman::event_type::rename))
-		== "rename");
-
-	test_concrete_executor();
-
-	std::printf("platform: %s\n", BOOST_PLATFORM);
-
-	return watchman::test::summary("platform");
-}

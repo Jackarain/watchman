@@ -9,7 +9,8 @@
 //
 //
 
-#include "test_util.hpp"
+#define BOOST_TEST_MODULE fsevents_events
+#include <boost/test/included/unit_test.hpp>
 
 #include <watchman/detail/fsevents_events.hpp>
 
@@ -73,7 +74,7 @@ namespace {
 	}
 
 	// 同一路径第一次带创建标志的事件是创建，之后的是合并进来的修改。
-	void test_created_then_modified()
+	BOOST_AUTO_TEST_CASE(created_then_modified)
 	{
 		fsevents_event_filter filter;
 		const fsevents_event coalesced = make_event(true, false, false, true);
@@ -82,21 +83,20 @@ namespace {
 			{ coalesced, "/watch/file.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::creation, "/watch/file.txt"));
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::creation, "/watch/file.txt"));
 
 		batch = convert(filter, {
 			{ coalesced, "/watch/file.txt", true },
 			{ make_event(false, false, false, true), "/watch/file.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 2);
-		WATCHMAN_CHECK(has_event(batch, event_type::modification,
-			"/watch/file.txt"));
+		BOOST_TEST(batch.size() == 2);
+		BOOST_TEST(has_event(batch, event_type::modification, "/watch/file.txt"));
 	}
 
 	// 删除之后同名路径重新出现，应当再次报告创建。
-	void test_removed_forgets_path()
+	BOOST_AUTO_TEST_CASE(removed_forgets_path)
 	{
 		fsevents_event_filter filter;
 
@@ -106,12 +106,12 @@ namespace {
 			{ make_event(true, false, false, true), "/watch/file.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 3);
-		WATCHMAN_CHECK(has_event(batch, event_type::creation, "/watch/file.txt"));
-		WATCHMAN_CHECK(has_event(batch, event_type::deletion, "/watch/file.txt"));
+		BOOST_TEST(batch.size() == 3);
+		BOOST_TEST(has_event(batch, event_type::creation, "/watch/file.txt"));
+		BOOST_TEST(has_event(batch, event_type::deletion, "/watch/file.txt"));
 	}
 
-	void test_modified_without_create()
+	BOOST_AUTO_TEST_CASE(modified_without_create)
 	{
 		fsevents_event_filter filter;
 
@@ -120,13 +120,12 @@ namespace {
 			{ make_event(false, false, false, false), "/watch/file.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::modification,
-			"/watch/file.txt"));
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::modification, "/watch/file.txt"));
 	}
 
 	// 同一批里的两侧重命名配对成一个带新路径的事件。
-	void test_rename_pair()
+	BOOST_AUTO_TEST_CASE(rename_pair)
 	{
 		fsevents_event_filter filter;
 
@@ -135,13 +134,13 @@ namespace {
 			{ make_event(false, false, true, false), "/watch/to.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::rename, "/watch/from.txt",
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::rename, "/watch/from.txt",
 			"/watch/to.txt"));
 	}
 
 	// 只有一侧的重命名按单侧事件报告。
-	void test_rename_single_side()
+	BOOST_AUTO_TEST_CASE(rename_single_side)
 	{
 		fsevents_event_filter filter;
 
@@ -149,20 +148,20 @@ namespace {
 			{ make_event(false, false, true, false), "/watch/moved.txt", false },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::rename, "/watch/moved.txt"));
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::rename, "/watch/moved.txt"));
 
 		filter.clear();
 		batch = convert(filter, {
 			{ make_event(false, false, true, false), "/watch/back.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::rename, "/watch/back.txt"));
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::rename, "/watch/back.txt"));
 	}
 
 	// 合并上报时重命名标志优先于创建标志。
-	void test_rename_before_created()
+	BOOST_AUTO_TEST_CASE(rename_before_created)
 	{
 		fsevents_event_filter filter;
 
@@ -170,27 +169,15 @@ namespace {
 			{ make_event(true, false, true, true), "/watch/to.txt", true },
 		});
 
-		WATCHMAN_CHECK(batch.size() == 1);
-		WATCHMAN_CHECK(has_event(batch, event_type::rename, "/watch/to.txt"));
+		BOOST_TEST(batch.size() == 1);
+		BOOST_TEST(has_event(batch, event_type::rename, "/watch/to.txt"));
 
 		// 重命名到的新路径已经记下来，之后的修改不再算创建。
 		const notify_events next = convert(filter, {
 			{ make_event(true, false, false, true), "/watch/to.txt", true },
 		});
 
-		WATCHMAN_CHECK(next.size() == 1);
-		WATCHMAN_CHECK(has_event(next, event_type::modification, "/watch/to.txt"));
+		BOOST_TEST(next.size() == 1);
+		BOOST_TEST(has_event(next, event_type::modification, "/watch/to.txt"));
 	}
 } // namespace
-
-int main()
-{
-	test_created_then_modified();
-	test_removed_forgets_path();
-	test_modified_without_create();
-	test_rename_pair();
-	test_rename_single_side();
-	test_rename_before_created();
-
-	return watchman::test::summary("fsevents_events");
-}

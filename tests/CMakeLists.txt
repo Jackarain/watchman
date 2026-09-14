@@ -15,6 +15,15 @@ function(watchman_add_test name)
         CXX_EXTENSIONS OFF
         CXX_STANDARD_REQUIRED ON)
 
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Boost.Test 用 __COUNTER__ 生成测试用例的唯一名字，-Wpedantic 下较新的
+        # clang 会把它当作 C2y 扩展报警，和 CI 的 -Werror 组合冲突。旧版本 clang
+        # 不认识后一条选项，先由前一条压住它自己发出的未知告警选项告警。
+        target_compile_options(watchman_test_${name} PRIVATE
+            -Wno-unknown-warning-option
+            -Wno-c2y-extensions)
+    endif()
+
     add_test(NAME ${name} COMMAND watchman_test_${name})
     set_tests_properties(${name} PROPERTIES TIMEOUT 60)
 endfunction()

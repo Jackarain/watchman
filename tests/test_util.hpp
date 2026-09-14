@@ -13,41 +13,8 @@
 
 #include <boost/filesystem.hpp>
 
-#include <string>
-
-#include <cstdio>
-
 namespace watchman {
 	namespace test {
-
-		inline int& failures() noexcept
-		{
-			static int count = 0;
-			return count;
-		}
-
-		inline void check(bool ok, const char* expr, const char* file, int line)
-		{
-			if (ok)
-				return;
-
-			++failures();
-			std::fprintf(stderr, "%s:%d: check failed: %s\n", file, line, expr);
-		}
-
-		inline int summary(const char* name)
-		{
-			if (failures() == 0)
-			{
-				std::printf("[ PASSED ] %s\n", name);
-				return 0;
-			}
-
-			std::fprintf(stderr, "[ FAILED ] %s (%d failed check(s))\n",
-				name, failures());
-
-			return 1;
-		}
 
 		// 测试用的临时目录，析构时自动清理。
 		class temp_dir
@@ -76,6 +43,3 @@ namespace watchman {
 		};
 	} // namespace test
 } // namespace watchman
-
-#define WATCHMAN_CHECK(expr) \
-	::watchman::test::check(!!(expr), #expr, __FILE__, __LINE__)

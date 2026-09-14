@@ -9,40 +9,46 @@
 //
 //
 
-#include "test_util.hpp"
+#define BOOST_TEST_MODULE path_exclusion
+#include <boost/test/included/unit_test.hpp>
 
 #include <watchman/detail/path_exclusion.hpp>
 
 #include <vector>
 
-int main()
-{
-	using namespace watchman;
+namespace {
+
 	namespace fs = boost::filesystem;
 
-	// 未配置排除目录时，任何路径都不被排除。
-	WATCHMAN_CHECK(!detail::is_excluded({}, "/tmp/a/b"));
+	using watchman::detail::is_excluded;
 
-	const std::vector<fs::path> excluded{
-		"/tmp/watch/a",
-		"/tmp/watch/b/c",
-	};
+	BOOST_AUTO_TEST_CASE(empty_exclusion_list)
+	{
+		// 未配置排除目录时，任何路径都不被排除。
+		BOOST_TEST(!is_excluded({}, "/tmp/a/b"));
+	}
 
-	WATCHMAN_CHECK(detail::is_excluded(excluded, "/tmp/watch/a"));
-	WATCHMAN_CHECK(detail::is_excluded(excluded, "/tmp/watch/a/file.txt"));
-	WATCHMAN_CHECK(detail::is_excluded(excluded, "/tmp/watch/a/sub/file.txt"));
+	BOOST_AUTO_TEST_CASE(excluded_subtrees)
+	{
+		const std::vector<fs::path> excluded{
+			"/tmp/watch/a",
+			"/tmp/watch/b/c",
+		};
 
-	WATCHMAN_CHECK(detail::is_excluded(excluded, "/tmp/watch/b/c/file.txt"));
-	WATCHMAN_CHECK(!detail::is_excluded(excluded, "/tmp/watch/b"));
+		BOOST_TEST(is_excluded(excluded, "/tmp/watch/a"));
+		BOOST_TEST(is_excluded(excluded, "/tmp/watch/a/file.txt"));
+		BOOST_TEST(is_excluded(excluded, "/tmp/watch/a/sub/file.txt"));
 
-	// 前缀相同的兄弟目录不属于排除范围。
-	WATCHMAN_CHECK(!detail::is_excluded(excluded, "/tmp/watch/ab/file.txt"));
-	WATCHMAN_CHECK(!detail::is_excluded(excluded, "/tmp/watch"));
+		BOOST_TEST(is_excluded(excluded, "/tmp/watch/b/c/file.txt"));
+		BOOST_TEST(!is_excluded(excluded, "/tmp/watch/b"));
 
-	WATCHMAN_CHECK(!detail::is_excluded(excluded, "/tmp/other/file.txt"));
+		// 前缀相同的兄弟目录不属于排除范围。
+		BOOST_TEST(!is_excluded(excluded, "/tmp/watch/ab/file.txt"));
+		BOOST_TEST(!is_excluded(excluded, "/tmp/watch"));
 
-	// 仅做字面比较，不对 ".." 做规范化处理。
-	WATCHMAN_CHECK(!detail::is_excluded(excluded, "/tmp/watch/a/../a/file.txt"));
+		BOOST_TEST(!is_excluded(excluded, "/tmp/other/file.txt"));
 
-	return test::summary("path_exclusion");
-}
+		// 仅做字面比较，不对 ".." 做规范化处理。
+		BOOST_TEST(!is_excluded(excluded, "/tmp/watch/a/../a/file.txt"));
+	}
+} // namespace

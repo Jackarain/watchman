@@ -117,6 +117,7 @@ target_link_libraries(app PRIVATE watchman::watchman)
 - BSD 与 Solaris 后端由后台线程取内核事件，再通过 `post` 完成等待动作，因此不阻塞执行器
 
 **测试**
+- 用例基于 Boost.Test 的仅头文件模式（`<boost/test/included/unit_test.hpp>`），不需要链接测试库
 - `tests/notify_event_test.cpp`：事件类型与批次
 - `tests/path_exclusion_test.cpp`、`tests/path_remap_test.cpp`：路径排除与路径换算规则
 - `tests/fsevents_events_test.cpp`：FSEvents 的事件类型换算与重命名配对

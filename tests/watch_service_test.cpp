@@ -9,8 +9,12 @@
 //
 //
 
+#define BOOST_TEST_MODULE watch_service
+
 #include "test_util.hpp"
 
+// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
+// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/watchman.hpp>
 
 #include <boost/asio/bind_cancellation_slot.hpp>
@@ -20,6 +24,8 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_future.hpp>
+
+#include <boost/test/included/unit_test.hpp>
 
 #include <chrono>
 #include <condition_variable>
@@ -301,7 +307,7 @@ namespace {
 		std::thread m_thread;
 	};
 
-	void test_create_modify_delete()
+	BOOST_AUTO_TEST_CASE(create_modify_delete)
 	{
 		watch_bed bed;
 		bed.start();
@@ -309,40 +315,40 @@ namespace {
 		const fs::path file = bed.dir() / "file.txt";
 
 		write_file(file, "hello");
-		WATCHMAN_CHECK(bed.collector().wait_for_event(file,
+		BOOST_TEST(bed.collector().wait_for_event(file,
 			watchman::event_type::creation));
 
 		write_file(file, "hello watchman");
-		WATCHMAN_CHECK(bed.collector().wait_for_event(file,
+		BOOST_TEST(bed.collector().wait_for_event(file,
 			watchman::event_type::modification));
 
 		fs::remove(file);
-		WATCHMAN_CHECK(bed.collector().wait_for_event(file,
+		BOOST_TEST(bed.collector().wait_for_event(file,
 			watchman::event_type::deletion));
 	}
 
-	void test_sub_directory()
+	BOOST_AUTO_TEST_CASE(sub_directory)
 	{
 		watch_bed bed;
 		bed.start();
 
 		const fs::path sub = bed.dir() / "sub";
 		fs::create_directory(sub);
-		WATCHMAN_CHECK(bed.collector().wait_for_event(sub,
+		BOOST_TEST(bed.collector().wait_for_event(sub,
 			watchman::event_type::creation));
 
 		// 新建目录下的文件同样应被监视。
 		const fs::path inner = sub / "inner.txt";
 		write_file(inner, "data");
-		WATCHMAN_CHECK(bed.collector().wait_for_event(inner,
+		BOOST_TEST(bed.collector().wait_for_event(inner,
 			watchman::event_type::creation));
 
 		write_file(inner, "data2");
-		WATCHMAN_CHECK(bed.collector().wait_for_event(inner,
+		BOOST_TEST(bed.collector().wait_for_event(inner,
 			watchman::event_type::modification));
 	}
 
-	void test_excluded_dirs()
+	BOOST_AUTO_TEST_CASE(excluded_dirs)
 	{
 		watch_bed bed;
 		const fs::path skip = bed.dir() / "skip";
@@ -360,14 +366,14 @@ namespace {
 		write_file(created, "kept");
 		write_file(dropped, "dropped");
 
-		WATCHMAN_CHECK(bed.collector().wait_for_event(created,
+		BOOST_TEST(bed.collector().wait_for_event(created,
 			watchman::event_type::creation));
 
-		WATCHMAN_CHECK(bed.collector().wait_for_no_event(dropped));
-		WATCHMAN_CHECK(bed.collector().wait_for_no_event(skip));
+		BOOST_TEST(bed.collector().wait_for_no_event(dropped));
+		BOOST_TEST(bed.collector().wait_for_no_event(skip));
 	}
 
-	void test_rename()
+	BOOST_AUTO_TEST_CASE(rename)
 	{
 		watch_bed bed;
 		bed.start();
@@ -376,12 +382,12 @@ namespace {
 		const fs::path to = bed.dir() / "to.txt";
 
 		write_file(from, "data");
-		WATCHMAN_CHECK(bed.collector().wait_for_event(from,
+		BOOST_TEST(bed.collector().wait_for_event(from,
 			watchman::event_type::creation));
 
 		// 目录内重命名：给出新旧路径，或者等价的新建加删除。
 		fs::rename(from, to);
-		WATCHMAN_CHECK(bed.collector().wait_for(
+		BOOST_TEST(bed.collector().wait_for(
 			[&](const notify_events& all) { return has_move(all, from, to); }));
 
 		// 移出监视目录：只保留原路径。
@@ -389,19 +395,19 @@ namespace {
 		const fs::path moved_out = outside.path() / "moved.txt";
 
 		fs::rename(to, moved_out);
-		WATCHMAN_CHECK(bed.collector().wait_for(
+		BOOST_TEST(bed.collector().wait_for(
 			[&](const notify_events& all) { return has_moved_out(all, to); }));
 
 		// 移入监视目录：只保留新路径。
 		const fs::path moved_in = bed.dir() / "back.txt";
 
 		fs::rename(moved_out, moved_in);
-		WATCHMAN_CHECK(bed.collector().wait_for(
+		BOOST_TEST(bed.collector().wait_for(
 			[&](const notify_events& all) { return has_moved_in(all, moved_in); }));
 	}
 
 	// 允许同时发起多个等待，每个等待自带状态。
-	void test_concurrent_waits()
+	BOOST_AUTO_TEST_CASE(concurrent_waits)
 	{
 		watchman::test::temp_dir temp;
 		net::io_context io;
@@ -416,17 +422,17 @@ namespace {
 
 		// 每个等待独立消费一个事件批次。
 		write_file(temp.path() / "a.txt", "a");
-		WATCHMAN_CHECK(wait_until([&] { return ready_count(futures) >= 1; }));
+		BOOST_TEST(wait_until([&] { return ready_count(futures) >= 1; }));
 
 		write_file(temp.path() / "b.txt", "b");
-		WATCHMAN_CHECK(wait_until([&] { return ready_count(futures) == 2; }));
+		BOOST_TEST(wait_until([&] { return ready_count(futures) == 2; }));
 
 		io.stop();
 		thread.join();
 	}
 
 	// 处理函数在它自己的关联执行器（这里是一个 strand）上被调用。
-	void test_associated_executor()
+	BOOST_AUTO_TEST_CASE(associated_executor)
 	{
 		watchman::test::temp_dir temp;
 		net::io_context io;
@@ -452,10 +458,10 @@ namespace {
 		io.stop();
 		thread.join();
 
-		WATCHMAN_CHECK(called_on_strand);
+		BOOST_TEST(called_on_strand);
 	}
 
-	void test_cancel_wait()
+	BOOST_AUTO_TEST_CASE(cancel_wait)
 	{
 		watchman::test::temp_dir temp;
 		net::io_context io;
@@ -478,23 +484,10 @@ namespace {
 		std::this_thread::sleep_for(200ms);
 		signal.emit(net::cancellation_type::all);
 
-		WATCHMAN_CHECK(future.wait_for(10s) == std::future_status::ready);
-		WATCHMAN_CHECK(future.get() == net::error::operation_aborted);
+		BOOST_CHECK(future.wait_for(10s) == std::future_status::ready);
+		BOOST_TEST(future.get() == net::error::operation_aborted);
 
 		io.stop();
 		thread.join();
 	}
 } // namespace
-
-int main()
-{
-	test_create_modify_delete();
-	test_sub_directory();
-	test_excluded_dirs();
-	test_rename();
-	test_concurrent_waits();
-	test_associated_executor();
-	test_cancel_wait();
-
-	return watchman::test::summary("watch_service");
-}

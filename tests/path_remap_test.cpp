@@ -9,7 +9,8 @@
 //
 //
 
-#include "test_util.hpp"
+#define BOOST_TEST_MODULE path_remap
+#include <boost/test/included/unit_test.hpp>
 
 #include <watchman/detail/path_remap.hpp>
 
@@ -31,49 +32,39 @@ namespace {
 		return result.generic_string();
 	}
 
-	void test_same_root()
+	BOOST_AUTO_TEST_CASE(same_root)
 	{
-		WATCHMAN_CHECK(remap("/watch", "/watch", "/watch") == "/watch");
-		WATCHMAN_CHECK(remap("/watch", "/watch", "/watch/a/b.txt")
+		BOOST_TEST(remap("/watch", "/watch", "/watch") == "/watch");
+		BOOST_TEST(remap("/watch", "/watch", "/watch/a/b.txt")
 			== "/watch/a/b.txt");
 	}
 
 	// macOS 上 /var 是指向 /private/var 的符号链接，FSEvents 上报的是解析过
 	// 符号链接的真实路径。
-	void test_symlinked_root()
+	BOOST_AUTO_TEST_CASE(symlinked_root)
 	{
-		WATCHMAN_CHECK(remap("/private/var/tmp/w", "/var/tmp/w",
+		BOOST_TEST(remap("/private/var/tmp/w", "/var/tmp/w",
 			"/private/var/tmp/w/file.txt") == "/var/tmp/w/file.txt");
 
-		WATCHMAN_CHECK(remap("/private/var/tmp/w", "/var/tmp/w",
+		BOOST_TEST(remap("/private/var/tmp/w", "/var/tmp/w",
 			"/private/var/tmp/w/sub/file.txt") == "/var/tmp/w/sub/file.txt");
 
-		WATCHMAN_CHECK(remap("/private/var/tmp/w", "/var/tmp/w",
+		BOOST_TEST(remap("/private/var/tmp/w", "/var/tmp/w",
 			"/private/var/tmp/w") == "/var/tmp/w");
 	}
 
-	void test_outside_root()
+	BOOST_AUTO_TEST_CASE(outside_root)
 	{
 		// 前缀相同的兄弟目录不属于监视范围。
-		WATCHMAN_CHECK(remap("/watch", "/registered", "/watch-other/a").empty());
-		WATCHMAN_CHECK(remap("/watch", "/registered", "/other/a").empty());
-		WATCHMAN_CHECK(remap("/watch", "/registered", "/watch") == "/registered");
+		BOOST_TEST(remap("/watch", "/registered", "/watch-other/a").empty());
+		BOOST_TEST(remap("/watch", "/registered", "/other/a").empty());
+		BOOST_TEST(remap("/watch", "/registered", "/watch") == "/registered");
 	}
 
-	void test_remap_identity()
+	BOOST_AUTO_TEST_CASE(remap_identity)
 	{
 		// 上报路径已经是注册形式时，real_root 与 base 相同，结果保持不变。
-		WATCHMAN_CHECK(remap("/registered", "/registered",
+		BOOST_TEST(remap("/registered", "/registered",
 			"/registered/a/b.txt") == "/registered/a/b.txt");
 	}
 } // namespace
-
-int main()
-{
-	test_same_root();
-	test_symlinked_root();
-	test_outside_root();
-	test_remap_identity();
-
-	return watchman::test::summary("path_remap");
-}

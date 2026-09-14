@@ -197,11 +197,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.BOOST_PREFIX }}
-          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}-v3
+          key: boost-${{ env.BOOST_DIR }}-msvc-${{ matrix.arch }}-v4
 
       # b2 的 bootstrap.bat 靠 vswhere 猜工具集，在较新的 Visual Studio 上会报
-      # Unknown toolset，这里改用官方的 CMake 发行包。asio 是仅头文件的库，
-      # 但它不在 filesystem 的依赖里，需要显式列上才会一起安装。
+      # Unknown toolset，这里改用官方的 CMake 发行包。asio 与 Boost.Test 都是
+      # 仅头文件用法，但它们不在 filesystem 的依赖里，需要显式列上才会一起安装。
       #
       # Release 与 Debug 的静态库分别使用各自的运行库，只装其中一种会让另一种
       # 构建类型在链接时报 LNK2038，因此两种变体都装上。这里用 gz 而不是 xz，
@@ -213,9 +213,9 @@ jobs:
           echo 下载并解压 Boost 源码
           curl -sSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --speed-limit 10240 --speed-time 60 -o boost.tar.gz "https://github.com/boostorg/boost/releases/download/%BOOST_DIR%/%BOOST_DIR%-cmake.tar.gz"
           tar -xzf boost.tar.gz
-          cmake -S "%BOOST_DIR%" -B boost-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
+          cmake -S "%BOOST_DIR%" -B boost-build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio;test"
           cmake --build boost-build-release --target install --parallel
-          cmake -S "%BOOST_DIR%" -B boost-build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio"
+          cmake -S "%BOOST_DIR%" -B boost-build-debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_INSTALL_PREFIX="%BOOST_PREFIX%" "-DBOOST_INCLUDE_LIBRARIES=filesystem;asio;test"
           cmake --build boost-build-debug --target install --parallel
 
       - name: 配置
