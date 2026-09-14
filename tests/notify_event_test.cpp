@@ -10,7 +10,7 @@
 //
 
 #define BOOST_TEST_MODULE notify_event
-#include <boost/test/included/unit_test.hpp>
+#include "test_framework.hpp"
 
 #include <watchman/notify_event.hpp>
 

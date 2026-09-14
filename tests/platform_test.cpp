@@ -10,20 +10,17 @@
 //
 
 #define BOOST_TEST_MODULE platform
+#include "test_framework.hpp"
 
 #include "test_util.hpp"
 #include "watch_service_interface.hpp"
 
-// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
-// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/watchman.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/predef.h>
-
-#include <boost/test/included/unit_test.hpp>
 
 #include <concepts>
 #include <functional>

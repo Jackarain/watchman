@@ -10,11 +10,10 @@
 //
 
 #define BOOST_TEST_MODULE watch_service
+#include "test_framework.hpp"
 
 #include "test_util.hpp"
 
-// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
-// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/watchman.hpp>
 
 #include <boost/asio/bind_cancellation_slot.hpp>
@@ -24,8 +23,6 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_future.hpp>
-
-#include <boost/test/included/unit_test.hpp>
 
 #include <chrono>
 #include <condition_variable>

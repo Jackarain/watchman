@@ -10,7 +10,7 @@
 //
 
 #define BOOST_TEST_MODULE path_exclusion
-#include <boost/test/included/unit_test.hpp>
+#include "test_framework.hpp"
 
 #include <watchman/detail/path_exclusion.hpp>
 

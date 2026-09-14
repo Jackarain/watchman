@@ -10,7 +10,7 @@
 //
 
 #define BOOST_TEST_MODULE fsevents_events
-#include <boost/test/included/unit_test.hpp>
+#include "test_framework.hpp"
 
 #include <watchman/detail/fsevents_events.hpp>
 

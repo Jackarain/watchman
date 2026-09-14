@@ -10,9 +10,8 @@
 //
 
 #define BOOST_TEST_MODULE wait_queue
+#include "test_framework.hpp"
 
-// Boost.Test 在 Windows 上会引入 <windows.h>，而 asio 要求在它之前先引入
-// winsock2.h，因此把用到 asio 的头文件放在 Boost.Test 之前。
 #include <watchman/detail/threaded_pump.hpp>
 #include <watchman/detail/wait_queue.hpp>
 
@@ -20,8 +19,6 @@
 #include <boost/asio/cancellation_signal.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/system/error_code.hpp>
-
-#include <boost/test/included/unit_test.hpp>
 
 #include <atomic>
 #include <chrono>
